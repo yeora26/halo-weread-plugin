@@ -17,6 +17,7 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import reactor.core.publisher.Mono;
 
@@ -68,28 +69,28 @@ public class CookieCloudClient {
                             JsonNode cookieData = decryptedNode.path("cookie_data");
                             if (cookieData.isObject()) {
                                 Iterator<Map.Entry<String, JsonNode>> fields = cookieData.fields();
+                                Map<String, String> cookies = new LinkedHashMap<>();
                                 while (fields.hasNext()) {
                                     JsonNode domainArray = fields.next().getValue();
                                     if (domainArray.isArray()) {
-                                        StringBuilder cookieBuilder = new StringBuilder();
-                                        boolean hasWrName = false;
                                         for (JsonNode item : domainArray) {
                                             String domain = item.path("domain").asText();
                                             if (domain.endsWith("weread.qq.com")) {
                                                 String name = item.path("name").asText();
                                                 String val = item.path("value").asText();
-                                                cookieBuilder.append(name).append("=").append(val).append("; ");
-                                                if ("wr_name".equals(name) && val != null && !val.trim().isEmpty()) {
-                                                    hasWrName = true;
+                                                if (!name.isBlank() && val != null && !val.trim().isEmpty()) {
+                                                    cookies.put(name, val);
                                                 }
                                             }
                                         }
-                                        if (hasWrName) {
-                                            return Mono.just(cookieBuilder.toString());
-                                        } else if (cookieBuilder.length() > 0 && !fields.hasNext()) {
-                                            return Mono.just(cookieBuilder.toString());
-                                        }
                                     }
+                                }
+                                if (isUsableWeReadCookie(cookies)) {
+                                    StringBuilder cookieBuilder = new StringBuilder();
+                                    cookies.forEach((name, val) ->
+                                            cookieBuilder.append(name).append("=").append(val).append("; ")
+                                    );
+                                    return Mono.just(cookieBuilder.toString());
                                 }
                             }
                         }
@@ -98,6 +99,23 @@ public class CookieCloudClient {
                         return Mono.error(new RuntimeException("解密失败: " + e.getMessage(), e));
                     }
                 });
+    }
+
+    private boolean isUsableWeReadCookie(Map<String, String> cookies) {
+        String wrVid = cookies.getOrDefault("wr_vid", "");
+        String wrName = cookies.getOrDefault("wr_name", "");
+        String wrSkey = cookies.getOrDefault("wr_skey", "");
+        if (!wrVid.isBlank() && (!wrName.isBlank() || !wrSkey.isBlank())) {
+            return true;
+        }
+        log.warn(
+                "CookieCloud: 微信读书 Cookie 不完整，keys={}, hasWrVid={}, hasWrName={}, hasWrSkey={}",
+                cookies.keySet(),
+                !wrVid.isBlank(),
+                !wrName.isBlank(),
+                !wrSkey.isBlank()
+        );
+        return false;
     }
 
     private String decryptCryptoJS(String encryptedBase64, String uuid, String password) throws Exception {

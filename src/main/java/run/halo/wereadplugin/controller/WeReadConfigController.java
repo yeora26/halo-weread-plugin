@@ -49,6 +49,7 @@ public class WeReadConfigController {
                     if (payload.containsKey("cookieCloudUrl")) configMap.getData().put("cookieCloudUrl", payload.get("cookieCloudUrl"));
                     if (payload.containsKey("cookieCloudUuid")) configMap.getData().put("cookieCloudUuid", payload.get("cookieCloudUuid"));
                     if (payload.containsKey("cookieCloudPassword")) configMap.getData().put("cookieCloudPassword", payload.get("cookieCloudPassword"));
+                    if (payload.containsKey("userAgent")) configMap.getData().put("userAgent", payload.get("userAgent"));
                     return client.update(configMap);
                 })
                 .switchIfEmpty(Mono.defer(() -> {
@@ -60,6 +61,7 @@ public class WeReadConfigController {
                     if (payload.containsKey("cookieCloudUrl")) data.put("cookieCloudUrl", payload.get("cookieCloudUrl"));
                     if (payload.containsKey("cookieCloudUuid")) data.put("cookieCloudUuid", payload.get("cookieCloudUuid"));
                     if (payload.containsKey("cookieCloudPassword")) data.put("cookieCloudPassword", payload.get("cookieCloudPassword"));
+                    if (payload.containsKey("userAgent")) data.put("userAgent", payload.get("userAgent"));
                     newConfig.setData(data);
                     return client.create(newConfig);
                 }))
@@ -71,6 +73,7 @@ public class WeReadConfigController {
         String url = req.get("url");
         String uuid = req.get("uuid");
         String password = req.get("password");
+        String userAgent = req.get("userAgent");
 
         return cookieCloudClient.fetchWeReadCookie(url, uuid, password)
                 .flatMap(cookie -> {
@@ -91,6 +94,9 @@ public class WeReadConfigController {
                                 cm.getData().put("cookieCloudUrl", url);
                                 cm.getData().put("cookieCloudUuid", uuid);
                                 cm.getData().put("cookieCloudPassword", password);
+                                if (userAgent != null) {
+                                    cm.getData().put("userAgent", userAgent);
+                                }
 
                                 if (cm.getMetadata().getCreationTimestamp() == null) {
                                     return client.create(cm);

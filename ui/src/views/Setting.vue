@@ -34,6 +34,7 @@ const saveConfig = async () => {
         cookieCloudUrl: cookieCloudUrl.value,
         cookieCloudUuid: cookieCloudUuid.value,
         cookieCloudPassword: cookieCloudPassword.value,
+        userAgent: '',
       }),
     })
     saveMessage.value = res.ok ? '配置已保存' : '保存失败'
@@ -58,6 +59,7 @@ const fetchFromCookieCloud = async () => {
         url: cookieCloudUrl.value,
         uuid: cookieCloudUuid.value,
         password: cookieCloudPassword.value,
+        userAgent: '',
       }),
     })
     if (res.ok) {
@@ -81,13 +83,14 @@ const triggerSync = async () => {
     if (res.ok) {
       syncMessage.value = '同步触发成功，请稍后在书籍管理中刷新查看'
     } else {
-      syncMessage.value = '同步请求失败'
+      const data = await res.json().catch(() => ({}))
+      syncMessage.value = '同步请求失败: ' + (data.message || '错误码 ' + res.status)
     }
   } catch (error) {
-    syncMessage.value = '网络异常'
+    syncMessage.value = '网络异常: ' + (error instanceof Error ? error.message : String(error))
   } finally {
     isSyncing.value = false
-    setTimeout(() => (syncMessage.value = ''), 5000)
+    setTimeout(() => (syncMessage.value = ''), 8000)
   }
 }
 
@@ -227,9 +230,10 @@ onMounted(() => {
   margin-bottom: 6px;
 }
 .field-help {
-  font-size: 0.75rem;
-  color: #94a3b8;
-  margin-top: 6px;
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 0.78rem;
+  line-height: 1.5;
 }
 textarea, input {
   width: 100%;

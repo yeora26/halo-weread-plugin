@@ -28,9 +28,44 @@ interface BookItem {
   spec: BookSpec
 }
 
+interface Bookmark {
+  markId: string
+  content: string
+  colorStyle: number
+  createTime: number
+}
+
+interface Review {
+  markId: string
+  content: string
+  abstractContent: string
+  createTime: number
+}
+
+interface Chapter {
+  chapterUid: number
+  chapterTitle: string
+  bookmarks: Bookmark[]
+  reviews: Review[]
+}
+
+interface BookNotes {
+  chapters: Chapter[]
+  bookReviews: { markId: string; content: string; createTime: number }[]
+  totalBookmarks: number
+  totalReviews: number
+  total: number
+}
+
 const books = ref<BookItem[]>([])
 const loading = ref(false)
-const message = ref('')
+
+// 侧边抽屉
+const drawerOpen = ref(false)
+const drawerBook = ref<BookItem | null>(null)
+const drawerNotes = ref<BookNotes | null>(null)
+const notesLoading = ref(false)
+const notesError = ref('')
 
 const toast = ref({
   show: false,
@@ -85,7 +120,6 @@ const deleteBook = async (name: string, title: string) => {
 }
 
 const toggleVisibility = async (book: BookItem) => {
-  const targetStatus = !book.spec.hidden
   try {
     const res = await fetch(`/api/admin/halo-weread-plugin/books/${book.metadata.name}/toggle-visibility`, {
       method: 'PATCH'
@@ -102,6 +136,47 @@ const toggleVisibility = async (book: BookItem) => {
   }
 }
 
+// 打开书籍详情抽屉
+const openDrawer = async (book: BookItem) => {
+  drawerBook.value = book
+  drawerNotes.value = null
+  notesError.value = ''
+  drawerOpen.value = true
+  notesLoading.value = true
+
+  try {
+    const res = await fetch(`/api/admin/halo-weread-plugin/books/${book.spec.bookId}/notes`)
+    if (res.ok) {
+      drawerNotes.value = await res.json()
+    } else {
+      notesError.value = '加载笔记失败'
+    }
+  } catch (e) {
+    notesError.value = '请求异常'
+  } finally {
+    notesLoading.value = false
+  }
+}
+
+const closeDrawer = () => {
+  drawerOpen.value = false
+  setTimeout(() => {
+    drawerBook.value = null
+    drawerNotes.value = null
+  }, 300)
+}
+
+// 划线颜色映射（微信读书 style 字段）
+const bookmarkColorClass = (colorStyle: number) => {
+  const map: Record<number, string> = {
+    1: 'bm-yellow',
+    2: 'bm-red',
+    3: 'bm-blue',
+    4: 'bm-purple'
+  }
+  return map[colorStyle] || 'bm-yellow'
+}
+
 const formatTime = (ts: number) => {
   if (!ts) return '--'
   const d = new Date(ts)
@@ -116,11 +191,7 @@ const formatDuration = (minutes: number) => {
   return h > 0 ? `${h}时${m}分` : `${m}分`
 }
 
-const readStatusText = (info: number) => {
-  if (info === 3) return '已读完'
-  if (info === 2) return '在读'
-  return '未读'
-}
+const message = ref('')
 
 onMounted(() => {
   fetchBooks()
@@ -136,6 +207,7 @@ onMounted(() => {
         <span class="toast-text">{{ toast.message }}</span>
       </div>
     </Transition>
+
     <!-- 统计面板 -->
     <div class="stats-grid">
       <div class="stat-box">
@@ -214,6 +286,14 @@ onMounted(() => {
             <td class="text-muted fs-11">{{ formatTime(book.spec.lastReadTime) }}</td>
             <td class="text-center">
               <div class="row-actions">
+                <button
+                  v-if="(book.spec.noteCount || 0) + (book.spec.reviewCount || 0) > 0"
+                  class="h-btn-text notes-btn"
+                  @click="openDrawer(book)"
+                  title="查看笔记"
+                >
+                  笔记
+                </button>
                 <div class="switch-wrapper" :title="book.spec.hidden ? '当前已隐藏' : '当前已显示'">
                   <label class="h-switch">
                     <input type="checkbox" :checked="book.spec.hidden" @change="toggleVisibility(book)">
@@ -254,6 +334,11 @@ onMounted(() => {
                  <input type="checkbox" :checked="book.spec.hidden" @change="toggleVisibility(book)">
                  <span class="slider round"></span>
                </label>
+               <button
+                 v-if="(book.spec.noteCount || 0) + (book.spec.reviewCount || 0) > 0"
+                 class="card-notes-btn"
+                 @click="openDrawer(book)"
+               >笔记</button>
                <button class="card-del-btn" @click="deleteBook(book.metadata.name, book.spec.title)">删除</button>
             </div>
           </div>
@@ -268,6 +353,103 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- 笔记详情侧边抽屉 -->
+    <Transition name="drawer-mask">
+      <div v-if="drawerOpen" class="drawer-mask" @click.self="closeDrawer"></div>
+    </Transition>
+
+    <Transition name="drawer">
+      <div v-if="drawerOpen" class="notes-drawer">
+        <!-- 抽屉头部 -->
+        <div class="drawer-header">
+          <div class="drawer-book-info" v-if="drawerBook">
+            <img v-if="drawerBook.spec.cover" :src="drawerBook.spec.cover" class="drawer-cover" />
+            <div>
+              <div class="drawer-title">{{ drawerBook.spec.title }}</div>
+              <div class="drawer-author">{{ drawerBook.spec.author }}</div>
+              <div class="drawer-stats" v-if="drawerNotes">
+                <span class="stat-badge blue">划线 {{ drawerNotes.totalBookmarks }}</span>
+                <span class="stat-badge orange">想法 {{ drawerNotes.totalReviews }}</span>
+              </div>
+            </div>
+          </div>
+          <button class="drawer-close" @click="closeDrawer">✕</button>
+        </div>
+
+        <!-- 抽屉内容 -->
+        <div class="drawer-body">
+          <!-- 加载中 -->
+          <div v-if="notesLoading" class="drawer-loading">
+            <div class="loading-spinner"></div>
+            <span>加载笔记中...</span>
+          </div>
+
+          <!-- 错误 -->
+          <div v-else-if="notesError" class="drawer-error">{{ notesError }}</div>
+
+          <!-- 无笔记 -->
+          <div v-else-if="drawerNotes && drawerNotes.total === 0" class="drawer-empty">
+            暂无已同步的笔记，请先触发同步
+          </div>
+
+          <!-- 笔记内容 -->
+          <template v-else-if="drawerNotes">
+            <!-- 书评 -->
+            <div v-if="drawerNotes.bookReviews.length > 0" class="chapter-section">
+              <div class="chapter-header book-review-header">
+                <span class="chapter-icon">书评</span>
+                <span class="chapter-title-text">全书书评</span>
+              </div>
+              <div v-for="br in drawerNotes.bookReviews" :key="br.markId" class="book-review-block">
+                <p class="book-review-content">{{ br.content }}</p>
+                <div class="note-time">{{ formatTime(br.createTime) }}</div>
+              </div>
+            </div>
+
+            <!-- 按章节展示划线和想法 -->
+            <div
+              v-for="chapter in drawerNotes.chapters"
+              :key="chapter.chapterUid"
+              class="chapter-section"
+            >
+              <div class="chapter-header">
+                <span class="chapter-icon">章</span>
+                <span class="chapter-title-text">{{ chapter.chapterTitle || '未分章节' }}</span>
+                <span class="chapter-count">
+                  {{ chapter.bookmarks.length + chapter.reviews.length }}
+                </span>
+              </div>
+
+              <!-- 划线 -->
+              <div
+                v-for="bm in chapter.bookmarks"
+                :key="bm.markId"
+                class="bookmark-block"
+                :class="bookmarkColorClass(bm.colorStyle)"
+              >
+                <div class="bookmark-bar"></div>
+                <div class="bookmark-content">{{ bm.content }}</div>
+                <div class="note-time">{{ formatTime(bm.createTime) }}</div>
+              </div>
+
+              <!-- 想法（划线感想） -->
+              <div
+                v-for="rv in chapter.reviews"
+                :key="rv.markId"
+                class="review-block"
+              >
+                <div v-if="rv.abstractContent" class="review-abstract">
+                  "{{ rv.abstractContent }}"
+                </div>
+                <div class="review-content">{{ rv.content }}</div>
+                <div class="note-time">{{ formatTime(rv.createTime) }}</div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -518,27 +700,6 @@ onMounted(() => {
   font-weight: 600;
 }
 
-.h-btn {
-  padding: 8px 16px;
-  border-radius: 10px;
-  font-size: 0.875rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.h-btn-outline {
-  border: 1.5px solid #e2e8f0;
-  background: #fff;
-  color: #475569;
-}
-
-.h-btn-outline:hover {
-  background: #f8fafc;
-  border-color: #cbd5e1;
-  color: #1e293b;
-}
-
 .h-btn-text {
   background: transparent;
   border: 1px solid #e2e8f0;
@@ -564,30 +725,21 @@ onMounted(() => {
   border-color: #fecaca;
 }
 
-.h-btn-icon {
-  background: transparent;
-  border: 1px solid #e2e8f0;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: all 0.2s;
-  font-size: 14px;
+.h-btn-text.notes-btn {
+  color: #3b82f6;
+  border-color: #bfdbfe;
 }
 
-.h-btn-icon.danger:hover {
-  background: #fef2f2;
-  border-color: #fecaca;
+.h-btn-text.notes-btn:hover {
+  background: #eff6ff;
+  border-color: #93c5fd;
 }
 
 .row-actions {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 16px;
+  gap: 10px;
 }
 
 .switch-wrapper {
@@ -790,8 +942,19 @@ input:checked + .slider:before {
   .card-action-btns {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
     align-items: flex-end;
+  }
+
+  .card-notes-btn {
+    padding: 4px 10px;
+    border-radius: 6px;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    color: #3b82f6;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
   }
 
   .card-del-btn {
@@ -822,11 +985,294 @@ input:checked + .slider:before {
     flex: 1;
     max-width: 120px;
   }
+}
 
-  .last-read {
-    font-size: 0.7rem;
-    color: #94a3b8;
-    margin-left: 12px;
-  }
+/* =========================================
+   笔记抽屉
+   ========================================= */
+
+.drawer-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.4);
+  z-index: 1000;
+  backdrop-filter: blur(2px);
+}
+
+.notes-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(520px, 100vw);
+  background: #fff;
+  z-index: 1001;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -8px 0 40px rgba(0, 0, 0, 0.12);
+}
+
+/* 抽屉头部 */
+.drawer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid #f1f5f9;
+  background: #f8fafc;
+  flex-shrink: 0;
+}
+
+.drawer-book-info {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.drawer-cover {
+  width: 52px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  flex-shrink: 0;
+}
+
+.drawer-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.4;
+  max-width: 300px;
+}
+
+.drawer-author {
+  font-size: 0.8rem;
+  color: #64748b;
+  margin-top: 4px;
+}
+
+.drawer-stats {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.stat-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 100px;
+}
+
+.stat-badge.blue {
+  background: #eff6ff;
+  color: #3b82f6;
+}
+
+.stat-badge.orange {
+  background: #fff7ed;
+  color: #f97316;
+}
+
+.drawer-close {
+  background: transparent;
+  border: none;
+  font-size: 18px;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
+  transition: color 0.2s;
+  flex-shrink: 0;
+}
+
+.drawer-close:hover {
+  color: #1e293b;
+}
+
+/* 抽屉体 */
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+
+/* 加载状态 */
+.drawer-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 60px 0;
+  color: #64748b;
+  font-size: 0.875rem;
+}
+
+.loading-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid #e2e8f0;
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.drawer-error,
+.drawer-empty {
+  text-align: center;
+  padding: 60px 0;
+  color: #94a3b8;
+  font-size: 0.875rem;
+}
+
+.drawer-error {
+  color: #ef4444;
+}
+
+/* 章节区块 */
+.chapter-section {
+  margin-bottom: 28px;
+}
+
+.chapter-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 2px solid #f1f5f9;
+}
+
+.chapter-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: #3b82f6;
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.book-review-header .chapter-icon {
+  background: #f97316;
+}
+
+.chapter-title-text {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: #1e293b;
+  flex: 1;
+}
+
+.chapter-count {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  background: #f1f5f9;
+  padding: 2px 8px;
+  border-radius: 100px;
+}
+
+/* 划线块 */
+.bookmark-block {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.bookmark-bar {
+  width: 4px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.bm-yellow .bookmark-bar { background: #fbbf24; }
+.bm-red    .bookmark-bar { background: #ef4444; }
+.bm-blue   .bookmark-bar { background: #3b82f6; }
+.bm-purple .bookmark-bar { background: #a855f7; }
+
+.bookmark-content {
+  font-size: 0.875rem;
+  color: #1e293b;
+  line-height: 1.7;
+  flex: 1;
+}
+
+/* 想法块 */
+.review-block {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #fffbeb;
+  border-left: 3px solid #fbbf24;
+}
+
+.review-abstract {
+  font-size: 0.78rem;
+  color: #92400e;
+  font-style: italic;
+  margin-bottom: 8px;
+  line-height: 1.5;
+  opacity: 0.8;
+}
+
+.review-content {
+  font-size: 0.875rem;
+  color: #1e293b;
+  line-height: 1.7;
+}
+
+/* 书评块 */
+.book-review-block {
+  padding: 16px;
+  border-radius: 8px;
+  background: #fff7ed;
+  margin-bottom: 12px;
+  border: 1px solid #fed7aa;
+}
+
+.book-review-content {
+  font-size: 0.875rem;
+  color: #1e293b;
+  line-height: 1.8;
+  margin: 0 0 8px;
+}
+
+/* 笔记时间 */
+.note-time {
+  font-size: 0.7rem;
+  color: #cbd5e1;
+  margin-top: 6px;
+  text-align: right;
+}
+
+/* 抽屉过渡动画 */
+.drawer-mask-enter-active,
+.drawer-mask-leave-active {
+  transition: opacity 0.25s ease;
+}
+.drawer-mask-enter-from,
+.drawer-mask-leave-to {
+  opacity: 0;
+}
+
+.drawer-enter-active,
+.drawer-leave-active {
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.drawer-enter-from,
+.drawer-leave-to {
+  transform: translateX(100%);
 }
 </style>

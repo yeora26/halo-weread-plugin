@@ -1,22 +1,20 @@
 package run.halo.wereadplugin.controller;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
 import run.halo.app.extension.ReactiveExtensionClient;
 import run.halo.wereadplugin.extension.WereadBook;
 import org.springframework.http.ResponseEntity;
 
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
+@Slf4j
 @RestController
 @RequestMapping("/api/admin/halo-weread-plugin")
 public class WeReadBookController {
 
-    private static final Logger log = LoggerFactory.getLogger(WeReadBookController.class);
     private final ReactiveExtensionClient extensionClient;
 
     public WeReadBookController(ReactiveExtensionClient extensionClient) {
