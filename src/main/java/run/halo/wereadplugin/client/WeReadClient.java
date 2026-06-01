@@ -20,6 +20,7 @@ import java.util.Locale;
 import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.InflaterInputStream;
 
@@ -103,6 +104,7 @@ public class WeReadClient {
                     if (newCookie.equals(current)) return Mono.empty();
                     
                     data.put("cookie", newCookie);
+                    data.put("cookieLastRefreshTime", String.valueOf(System.currentTimeMillis()));
                     config.setData(data);
                     log.info("WeRead: 检测到凭证变化，已自动更新并持久化 Cookie。");
                     return extensionClient.update(config);
@@ -304,6 +306,66 @@ public class WeReadClient {
         String primaryUrl = "https://weread.qq.com/web/review/list" + query;
         String fallbackUrl = "https://i.weread.qq.com/review/list" + query;
         return executeGetWithFallback(primaryUrl, fallbackUrl, "reviews", cookie, userAgent, bookId, "review/list");
+    }
+
+    /**
+     * 调用微信读书 Agent API Gateway。参考 obsidian-weread-plugin 1.6：
+     * POST https://i.weread.qq.com/api/agent/gateway
+     * body: { api_name, skill_version, ...params }
+     */
+    public Mono<JsonNode> callAgentGateway(String apiKey, String apiName, Map<String, Object> params) {
+        if (apiKey == null || apiKey.isBlank()) {
+            return Mono.error(new RuntimeException("未配置微信读书 API Key"));
+        }
+        try {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("api_name", apiName);
+            body.put("skill_version", "1.0.3");
+            if (params != null) {
+                body.putAll(params);
+            }
+            String requestBody = objectMapper.writeValueAsString(body);
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create("https://i.weread.qq.com/api/agent/gateway"))
+                    .version(HttpClient.Version.HTTP_1_1)
+                    .header("Authorization", "Bearer " + apiKey)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json, text/plain, */*")
+                    .POST(HttpRequest.BodyPublishers.ofString(requestBody))
+                    .build();
+            return Mono.fromFuture(httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray()))
+                    .flatMap(response -> {
+                        try {
+                            String bodyText = decodeBody(response);
+                            String logBody = bodyText.length() > 300 ? bodyText.substring(0, 300) + "..." : bodyText;
+                            log.info("WeRead Agent API Response: apiName={}, status={}, body={}", apiName, response.statusCode(), logBody);
+                            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                                return Mono.error(new RuntimeException("Agent API Error: " + response.statusCode()));
+                            }
+                            JsonNode jsonBody = objectMapper.readTree(bodyText);
+                            if (jsonBody.has("errcode") && jsonBody.path("errcode").asInt(0) != 0) {
+                                return Mono.error(new RuntimeException(
+                                        "Agent API Error: " + jsonBody.path("errcode").asInt()
+                                                + ", " + jsonBody.path("errmsg").asText("")
+                                ));
+                            }
+                            return Mono.just(jsonBody);
+                        } catch (Exception e) {
+                            return Mono.error(new RuntimeException("Agent API parse error: " + e.getMessage(), e));
+                        }
+                    });
+        } catch (Exception e) {
+            return Mono.error(new RuntimeException("Build Agent API request error: " + e.getMessage(), e));
+        }
+    }
+
+    public Mono<JsonNode> getReadingStats(String apiKey, String mode, Long baseTime) {
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("mode", mode);
+        if (baseTime != null) {
+            params.put("baseTime", baseTime);
+        }
+        return callAgentGateway(apiKey, "/readdata/detail", params);
     }
 
     private Mono<WeReadResponse> executeGetWithFallback(

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 interface BookSpec {
   bookId: string
@@ -57,8 +57,128 @@ interface BookNotes {
   total: number
 }
 
+type StatsRange = 'week' | 'month' | 'year' | 'all'
+
+interface RangeOption {
+  value: StatsRange
+  label: string
+}
+
+interface StatCardItem {
+  label: string
+  value: string
+  unit: string
+  icon: string
+  compare?: {
+    text: string
+    up: boolean
+  }
+}
+
+interface ChartPoint {
+  key: string
+  label: string
+  value: number
+  future?: boolean
+}
+
+interface HeatmapCell {
+  key: string
+  label: string
+  value: number
+  level: number
+  empty: boolean
+}
+
+interface HeatmapWeek {
+  key: string
+  cells: HeatmapCell[]
+}
+
+interface HeatmapMonthLabel {
+  month: number
+  column: number
+}
+
+interface PreferenceItem {
+  label: string
+  value: number
+  percent: number
+}
+
+interface ReadingStatItem {
+  stat: string
+  counts: string
+}
+
+interface ReadingLongestItem {
+  book?: {
+    bookId: string
+    title: string
+    author: string
+    cover?: string
+  }
+  albumInfo?: {
+    albumId: string
+    name: string
+    authorName: string
+    cover?: string
+  }
+  readTime: number
+  tags: string[]
+}
+
+interface ReadingCategoryPref {
+  categoryTitle: string
+  parentCategoryTitle: string
+  readingCount: number
+  readingTime: number
+}
+
+interface ReadingAuthorPref {
+  name: string
+  count: number
+  readTime: string
+}
+
+interface ReadingStatsResponse {
+  totalReadTime: number
+  readDays: number
+  dayAverageReadTime: number
+  compare?: number
+  readStat: ReadingStatItem[]
+  readLongest: ReadingLongestItem[]
+  readTimes: Record<string, number>
+  preferCategory: ReadingCategoryPref[]
+  preferTime?: number[]
+  preferAuthor?: ReadingAuthorPref[]
+}
+
+interface TopReadingBook {
+  id: string
+  title: string
+  author: string
+  category: string
+  cover: string
+  readingMinutes: number
+  progress: number
+}
+
+type StatsChartView = 'heatmap' | 'bar'
+
 const books = ref<BookItem[]>([])
 const loading = ref(false)
+const searchQuery = ref('')
+const categoryFilter = ref('all')
+const visibilityFilter = ref('all')
+const readStateFilter = ref('active')
+const showReadingStats = ref(false)
+const statsRange = ref<StatsRange>('year')
+const selectedStatsYear = ref(new Date().getFullYear())
+const statsChartView = ref<StatsChartView>('heatmap')
+const officialStats = ref<ReadingStatsResponse | null>(null)
+const statsLoading = ref(false)
+const statsError = ref('')
 
 // 侧边抽屉
 const drawerOpen = ref(false)
@@ -85,6 +205,581 @@ const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
 const totalBooks = computed(() => books.value.length)
 const totalNotes = computed(() => books.value.reduce((s, b) => s + (b.spec.noteCount || 0), 0))
 const totalReviews = computed(() => books.value.reduce((s, b) => s + (b.spec.reviewCount || 0), 0))
+const totalReadingMinutes = computed(() => books.value.reduce((s, b) => s + normalizeNumber(b.spec.readingTime), 0))
+const finishedBooks = computed(() => books.value.filter((book) => isFinished(book)).length)
+const readingBooks = computed(() => books.value.filter((book) => !isFinished(book)).length)
+
+const categoryOptions = computed(() => {
+  const categories = books.value
+    .map((book) => book.spec.category || '未分类')
+    .filter((category, index, arr) => arr.indexOf(category) === index)
+    .sort((a, b) => a.localeCompare(b, 'zh-CN'))
+  return ['all', ...categories]
+})
+
+const filteredBooks = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase()
+  return books.value.filter((book) => {
+    const category = book.spec.category || '未分类'
+    const matchesQuery = !query
+      || book.spec.title.toLowerCase().includes(query)
+      || (book.spec.author || '').toLowerCase().includes(query)
+    const matchesCategory = categoryFilter.value === 'all' || categoryFilter.value === category
+    const matchesVisibility = visibilityFilter.value === 'all'
+      || (visibilityFilter.value === 'visible' && !book.spec.hidden)
+      || (visibilityFilter.value === 'hidden' && book.spec.hidden)
+    const matchesReadState = readStateFilter.value === 'all'
+      || (readStateFilter.value === 'active' && !book.spec.hidden)
+      || (readStateFilter.value === 'reading' && !isFinished(book))
+      || (readStateFilter.value === 'finished' && isFinished(book))
+    return matchesQuery && matchesCategory && matchesVisibility && matchesReadState
+  })
+})
+
+const rangeOptions: RangeOption[] = [
+  { value: 'week', label: '周' },
+  { value: 'month', label: '月' },
+  { value: 'year', label: '年' },
+  { value: 'all', label: '全部' }
+]
+
+const now = () => new Date()
+
+const normalizeNumber = (value: number | undefined | null) => {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+const startOfDay = (date: Date) => {
+  const d = new Date(date)
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
+const addDays = (date: Date, days: number) => {
+  const d = new Date(date)
+  d.setDate(d.getDate() + days)
+  return d
+}
+
+const addMonths = (date: Date, months: number) => {
+  const d = new Date(date)
+  d.setMonth(d.getMonth() + months)
+  return d
+}
+
+const formatDateKey = (date: Date) => {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+const formatMonthKey = (date: Date) => {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+}
+
+const getBookActivityTime = (book: BookItem) => {
+  return normalizeNumber(book.spec.lastReadTime) || normalizeNumber(book.spec.finishTime)
+}
+
+const isFinished = (book: BookItem) => {
+  return normalizeNumber(book.spec.finishTime) > 0 || normalizeNumber(book.spec.progress) >= 99
+}
+
+const libraryYears = computed(() => {
+  const years = books.value
+    .map((book) => getBookActivityTime(book))
+    .filter((time) => time > 0)
+    .map((time) => new Date(time).getFullYear())
+  if (years.length === 0) return 0
+  return Math.max(...years) - Math.min(...years) + 1
+})
+
+const statsYears = computed(() => {
+  const currentYear = new Date().getFullYear()
+  const years = books.value
+    .map((book) => getBookActivityTime(book))
+    .filter((time) => time > 0)
+    .map((time) => new Date(time).getFullYear())
+  for (let year = currentYear - 5; year <= currentYear; year++) {
+    years.push(year)
+  }
+  return Array.from(new Set(years)).sort((a, b) => a - b)
+})
+
+const minStatsYear = computed(() => statsYears.value[0] || new Date().getFullYear())
+const maxStatsYear = computed(() => Math.max(statsYears.value[statsYears.value.length - 1] || new Date().getFullYear(), new Date().getFullYear()))
+const canGoPreviousYear = computed(() => selectedStatsYear.value > minStatsYear.value)
+const canGoNextYear = computed(() => selectedStatsYear.value < maxStatsYear.value)
+
+const changeStatsYear = (offset: number) => {
+  selectedStatsYear.value = Math.min(maxStatsYear.value, Math.max(minStatsYear.value, selectedStatsYear.value + offset))
+}
+
+const latestActivityTime = computed(() => {
+  return Math.max(...books.value.map((book) => getBookActivityTime(book)), 0)
+})
+
+const recentActiveBooks = computed(() => {
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000
+  return books.value.filter((book) => getBookActivityTime(book) >= since).length
+})
+
+const formatRelativeTime = (timestamp: number) => {
+  if (!timestamp) return '暂无'
+  const diff = Math.max(0, Date.now() - timestamp)
+  const minutes = Math.floor(diff / 60000)
+  if (minutes < 1) return '刚刚'
+  if (minutes < 60) return `${minutes}分钟前`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}小时前`
+  const days = Math.floor(hours / 24)
+  if (days < 30) return `${days}天前`
+  const months = Math.floor(days / 30)
+  if (months < 12) return `${months}个月前`
+  return `${Math.floor(months / 12)}年前`
+}
+
+const rangeStart = (range: StatsRange, base = now()) => {
+  const today = startOfDay(base)
+  if (range === 'week') {
+    const day = today.getDay() || 7
+    return addDays(today, 1 - day)
+  }
+  if (range === 'month') {
+    return new Date(today.getFullYear(), today.getMonth(), 1)
+  }
+  if (range === 'year') {
+    return new Date(selectedStatsYear.value, 0, 1)
+  }
+  return null
+}
+
+const rangeEnd = (range: StatsRange, base = now()) => {
+  const start = rangeStart(range, base)
+  if (!start) return null
+  if (range === 'week') return addDays(start, 7)
+  if (range === 'month') return addMonths(start, 1)
+  if (range === 'year') return new Date(selectedStatsYear.value + 1, 0, 1)
+  return null
+}
+
+const isInRange = (book: BookItem, range: StatsRange, start: Date | null, end: Date | null) => {
+  if (range === 'all') return true
+  const activityTime = getBookActivityTime(book)
+  return activityTime >= (start?.getTime() || 0) && activityTime < (end?.getTime() || Number.MAX_SAFE_INTEGER)
+}
+
+const activeBooks = computed(() => {
+  const start = rangeStart(statsRange.value)
+  const end = rangeEnd(statsRange.value)
+  return books.value.filter((book) => isInRange(book, statsRange.value, start, end))
+})
+
+const previousBooks = computed(() => {
+  if (statsRange.value === 'all') return []
+  const currentStart = rangeStart(statsRange.value)
+  const currentEnd = rangeEnd(statsRange.value)
+  if (!currentStart || !currentEnd) return []
+  const span = currentEnd.getTime() - currentStart.getTime()
+  const previousStart = new Date(currentStart.getTime() - span)
+  const previousEnd = new Date(currentStart.getTime())
+  return books.value.filter((book) => isInRange(book, statsRange.value, previousStart, previousEnd))
+})
+
+const activeReadingMinutes = computed(() => activeBooks.value.reduce((s, b) => s + normalizeNumber(b.spec.readingTime), 0))
+const secondsToMinutes = (seconds: number | undefined | null) => Math.round(normalizeNumber(seconds) / 60)
+const usingOfficialStats = computed(() => officialStats.value !== null)
+const displayReadingMinutes = computed(() => {
+  return usingOfficialStats.value ? secondsToMinutes(officialStats.value?.totalReadTime) : activeReadingMinutes.value
+})
+
+const activeReadDays = computed(() => {
+  const days = new Set<string>()
+  activeBooks.value.forEach((book) => {
+    const activityTime = getBookActivityTime(book)
+    if (activityTime > 0) {
+      days.add(formatDateKey(new Date(activityTime)))
+    }
+  })
+  return days.size
+})
+
+const previousReadingMinutes = computed(() => previousBooks.value.reduce((s, b) => s + normalizeNumber(b.spec.readingTime), 0))
+
+const displayAverageMinutes = computed(() => {
+  if (usingOfficialStats.value) return secondsToMinutes(officialStats.value?.dayAverageReadTime)
+  return activeReadDays.value > 0 ? Math.round(activeReadingMinutes.value / activeReadDays.value) : 0
+})
+
+const splitCountUnit = (value: string, fallbackUnit: string) => {
+  const normalized = value.trim()
+  if (!normalized) return { value: '0', unit: fallbackUnit }
+  const match = normalized.match(/^(\d+(?:\.\d+)?)(.*)$/)
+  if (!match) return { value: normalized, unit: '' }
+  return {
+    value: match[1],
+    unit: match[2].trim() || fallbackUnit
+  }
+}
+
+const rangeLabel = computed(() => {
+  if (statsRange.value === 'year') return `${selectedStatsYear.value}年`
+  return rangeOptions.find((item) => item.value === statsRange.value)?.label || '月'
+})
+
+const chartTitle = computed(() => {
+  if (statsRange.value === 'year') return statsChartView.value === 'heatmap' ? '每日阅读时长' : '每月阅读时长'
+  return statsRange.value === 'all' ? '每月阅读时长' : '每日阅读时长'
+})
+
+const formatDurationParts = (minutes: number) => {
+  const normalized = Math.max(0, Math.round(minutes))
+  return {
+    hours: Math.floor(normalized / 60),
+    minutes: normalized % 60
+  }
+}
+
+const displayDurationParts = computed(() => formatDurationParts(displayReadingMinutes.value))
+
+const compareText = computed(() => {
+  if (usingOfficialStats.value && officialStats.value?.compare !== undefined) {
+    const compare = officialStats.value.compare
+    const percent = Math.round(Math.abs(compare) * 100)
+    return {
+      text: `${compare >= 0 ? '较上期 +' : '较上期 -'}${percent}%`,
+      up: compare >= 0
+    }
+  }
+  if (statsRange.value === 'all' || previousReadingMinutes.value <= 0) return undefined
+  const diff = activeReadingMinutes.value - previousReadingMinutes.value
+  const percent = Math.round(Math.abs(diff) / previousReadingMinutes.value * 100)
+  return {
+    text: `${diff >= 0 ? '较上期 +' : '较上期 -'}${percent}%`,
+    up: diff >= 0
+  }
+})
+
+const statCards = computed<StatCardItem[]>(() => {
+  const readDays = usingOfficialStats.value ? normalizeNumber(officialStats.value?.readDays) : activeReadDays.value
+  const readCount = officialStats.value?.readStat?.find((item) => item.stat === '读过')?.counts || String(activeBooks.value.length)
+  const finishCount = officialStats.value?.readStat?.find((item) => item.stat === '读完')?.counts || String(activeBooks.value.filter((book) => isFinished(book)).length)
+  const noteCount = officialStats.value?.readStat?.find((item) => item.stat === '笔记')?.counts
+    || String(activeBooks.value.reduce((s, b) => s + normalizeNumber(b.spec.noteCount) + normalizeNumber(b.spec.reviewCount), 0))
+  const readCountParts = splitCountUnit(readCount, '本')
+  const finishCountParts = splitCountUnit(finishCount, '本')
+  const noteCountParts = splitCountUnit(noteCount, '条')
+  return [
+    { label: '阅读天数', value: String(readDays), unit: '天', icon: 'calendar' },
+    { label: '日均时长', value: formatDuration(displayAverageMinutes.value), unit: '', icon: 'trend', compare: compareText.value },
+    { label: '读过', value: readCountParts.value, unit: readCountParts.unit, icon: 'book' },
+    { label: '读完', value: finishCountParts.value, unit: finishCountParts.unit, icon: 'check' },
+    { label: '笔记', value: noteCountParts.value, unit: noteCountParts.unit, icon: 'pen' }
+  ]
+})
+
+const chartPoints = computed<ChartPoint[]>(() => {
+  if (usingOfficialStats.value && officialStats.value?.readTimes) {
+    if (statsRange.value === 'year') {
+      const values = new Map<string, number>()
+      Object.entries(officialStats.value.readTimes).forEach(([key, value]) => {
+        const timestamp = Number(key)
+        if (timestamp >= 0 && timestamp <= 12) {
+          const month = timestamp === 0 ? 0 : timestamp - 1
+          const monthKey = formatMonthKey(new Date(selectedStatsYear.value, month, 1))
+          values.set(monthKey, (values.get(monthKey) || 0) + secondsToMinutes(value))
+          return
+        }
+        const date = new Date(timestamp > 10_000_000_000 ? timestamp : timestamp * 1000)
+        if (date.getFullYear() !== selectedStatsYear.value) return
+        const monthKey = formatMonthKey(date)
+        values.set(monthKey, (values.get(monthKey) || 0) + secondsToMinutes(value))
+      })
+      return Array.from({ length: 12 }, (_, index) => {
+        const date = new Date(selectedStatsYear.value, index, 1)
+        const key = formatMonthKey(date)
+        return {
+          key,
+          label: `${index + 1}月`,
+          value: values.get(key) || 0,
+          future: date.getTime() > now().getTime()
+        }
+      })
+    }
+    return Object.entries(officialStats.value.readTimes)
+      .sort(([a], [b]) => Number(a) - Number(b))
+      .map(([key, value]) => {
+        const timestamp = Number(key)
+        const date = new Date(timestamp > 10_000_000_000 ? timestamp : timestamp * 1000)
+        const label = statsRange.value === 'all' ? `${date.getFullYear()}/${date.getMonth() + 1}` : `${date.getMonth() + 1}/${date.getDate()}`
+        return { key, label, value: secondsToMinutes(value) }
+      })
+  }
+  const current = now()
+  const values = new Map<string, number>()
+  activeBooks.value.forEach((book) => {
+    const activityTime = getBookActivityTime(book)
+    if (activityTime <= 0) return
+    const date = new Date(activityTime)
+    const key = statsRange.value === 'year' || statsRange.value === 'all'
+      ? formatMonthKey(date)
+      : formatDateKey(date)
+    values.set(key, (values.get(key) || 0) + normalizeNumber(book.spec.readingTime))
+  })
+
+  if (statsRange.value === 'week') {
+    const start = rangeStart('week', current) || startOfDay(current)
+    return Array.from({ length: 7 }, (_, index) => {
+      const date = addDays(start, index)
+      const key = formatDateKey(date)
+      return { key, label: `${date.getMonth() + 1}/${date.getDate()}`, value: values.get(key) || 0 }
+    })
+  }
+
+  if (statsRange.value === 'month') {
+    const start = rangeStart('month', current) || new Date(current.getFullYear(), current.getMonth(), 1)
+    const days = new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate()
+    return Array.from({ length: days }, (_, index) => {
+      const date = new Date(start.getFullYear(), start.getMonth(), index + 1)
+      const key = formatDateKey(date)
+      return {
+        key,
+        label: String(index + 1),
+        value: values.get(key) || 0,
+        future: date.getTime() > current.getTime()
+      }
+    })
+  }
+
+  if (statsRange.value === 'year') {
+    return Array.from({ length: 12 }, (_, index) => {
+      const date = new Date(selectedStatsYear.value, index, 1)
+      const key = formatMonthKey(date)
+      return { key, label: `${index + 1}月`, value: values.get(key) || 0, future: date.getTime() > current.getTime() }
+    })
+  }
+
+  const years = books.value
+    .map((book) => getBookActivityTime(book))
+    .filter((time) => time > 0)
+    .map((time) => new Date(time).getFullYear())
+  const minYear = years.length > 0 ? Math.min(...years) : current.getFullYear()
+  const maxYear = years.length > 0 ? Math.max(...years) : current.getFullYear()
+  const points: ChartPoint[] = []
+  for (let year = minYear; year <= maxYear; year++) {
+    for (let month = 0; month < 12; month++) {
+      const date = new Date(year, month, 1)
+      const key = formatMonthKey(date)
+      points.push({ key, label: `${String(year).slice(2)}/${month + 1}`, value: values.get(key) || 0 })
+    }
+  }
+  return points
+})
+
+const maxChartValue = computed(() => Math.max(...chartPoints.value.map((point) => point.value), 1))
+
+const heatmapWeeks = computed<HeatmapWeek[]>(() => {
+  const today = startOfDay(now())
+  const start = statsRange.value === 'all'
+    ? addDays(today, -364)
+    : rangeStart(statsRange.value, today) || addDays(today, -364)
+  const end = statsRange.value === 'all'
+    ? addDays(today, 1)
+    : rangeEnd(statsRange.value, today) || addDays(today, 1)
+  const values = new Map<string, number>()
+  if (usingOfficialStats.value && officialStats.value?.readTimes) {
+    Object.entries(officialStats.value.readTimes).forEach(([key, value]) => {
+      const timestamp = Number(key)
+      if (timestamp >= 0 && timestamp <= 12) return
+      const date = new Date(timestamp > 10_000_000_000 ? timestamp : timestamp * 1000)
+      if (date < start || date >= end) return
+      const dateKey = formatDateKey(date)
+      values.set(dateKey, (values.get(dateKey) || 0) + secondsToMinutes(value))
+    })
+  }
+  if (values.size === 0) {
+    activeBooks.value.forEach((book) => {
+      const activityTime = getBookActivityTime(book)
+      if (activityTime <= 0) return
+      const key = formatDateKey(new Date(activityTime))
+      values.set(key, (values.get(key) || 0) + normalizeNumber(book.spec.readingTime))
+    })
+  }
+
+  const cells: HeatmapCell[] = []
+  const leading = (start.getDay() + 6) % 7
+  for (let index = 0; index < leading; index++) {
+    cells.push({ key: `empty-start-${index}`, label: '', value: 0, level: 0, empty: true })
+  }
+
+  const maxValue = Math.max(...Array.from(values.values()), 1)
+  for (let date = new Date(start); date < end; date = addDays(date, 1)) {
+    const key = formatDateKey(date)
+    const value = values.get(key) || 0
+    const level = value === 0 ? 0 : Math.min(4, Math.ceil(value / maxValue * 4))
+    cells.push({
+      key,
+      label: `${key} ${formatDuration(value)}`,
+      value,
+      level,
+      empty: false
+    })
+  }
+
+  while (cells.length % 7 !== 0) {
+    cells.push({ key: `empty-end-${cells.length}`, label: '', value: 0, level: 0, empty: true })
+  }
+
+  const weeks: HeatmapWeek[] = []
+  for (let index = 0; index < cells.length; index += 7) {
+    weeks.push({ key: `week-${index / 7}`, cells: cells.slice(index, index + 7) })
+  }
+  return weeks
+})
+
+const heatmapMonthLabels = computed<HeatmapMonthLabel[]>(() => {
+  const start = rangeStart('year') || new Date(selectedStatsYear.value, 0, 1)
+  const leading = (start.getDay() + 6) % 7
+  return Array.from({ length: 12 }, (_, month) => {
+    const date = new Date(selectedStatsYear.value, month, 1)
+    const dayOffset = Math.floor((startOfDay(date).getTime() - start.getTime()) / 86_400_000)
+    return {
+      month: month + 1,
+      column: Math.floor((leading + dayOffset) / 7) + 1
+    }
+  })
+})
+
+const topBooks = computed(() => {
+  return [...activeBooks.value]
+    .sort((a, b) => normalizeNumber(b.spec.readingTime) - normalizeNumber(a.spec.readingTime))
+    .slice(0, 5)
+})
+
+const topReadingBooks = computed<TopReadingBook[]>(() => {
+  if (usingOfficialStats.value && officialStats.value?.readLongest?.length) {
+    return officialStats.value.readLongest.slice(0, 5).map((item, index) => {
+      const book = item.book
+      const album = item.albumInfo
+      return {
+        id: book?.bookId || album?.albumId || `official-${index}`,
+        title: book?.title || album?.name || '未命名内容',
+        author: book?.author || album?.authorName || '未知作者',
+        category: item.tags?.join(' · ') || '微信读书',
+        cover: book?.cover || album?.cover || '',
+        readingMinutes: secondsToMinutes(item.readTime),
+        progress: 100
+      }
+    })
+  }
+  return topBooks.value.map((book) => ({
+    id: book.metadata.name,
+    title: book.spec.title,
+    author: book.spec.author || '未知作者',
+    category: book.spec.category || '未分类',
+    cover: book.spec.cover || '',
+    readingMinutes: normalizeNumber(book.spec.readingTime),
+    progress: normalizeNumber(book.spec.progress)
+  }))
+})
+
+const categoryPreferences = computed<PreferenceItem[]>(() => {
+  if (usingOfficialStats.value && officialStats.value?.preferCategory?.length) {
+    const maxValue = Math.max(...officialStats.value.preferCategory.map((item) => item.readingTime), 1)
+    return officialStats.value.preferCategory.slice(0, 6).map((item) => ({
+      label: item.categoryTitle || item.parentCategoryTitle || '未分类',
+      value: item.readingCount,
+      percent: Math.round(item.readingTime / maxValue * 100)
+    }))
+  }
+  const values = new Map<string, number>()
+  activeBooks.value.forEach((book) => {
+    const category = book.spec.category || '未分类'
+    values.set(category, (values.get(category) || 0) + 1)
+  })
+  const maxValue = Math.max(...Array.from(values.values()), 1)
+  return Array.from(values.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([label, value]) => ({ label, value, percent: Math.round(value / maxValue * 100) }))
+})
+
+const authorPreferences = computed<PreferenceItem[]>(() => {
+  const values = new Map<string, number>()
+  activeBooks.value.forEach((book) => {
+    const author = book.spec.author || '未知作者'
+    values.set(author, (values.get(author) || 0) + 1)
+  })
+  const maxValue = Math.max(...Array.from(values.values()), 1)
+  return Array.from(values.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([label, value]) => ({ label, value, percent: Math.round(value / maxValue * 100) }))
+})
+
+const hourDistribution = computed<ChartPoint[]>(() => {
+  if (usingOfficialStats.value && officialStats.value?.preferTime?.length) {
+    return officialStats.value.preferTime.map((value, index) => {
+      const hour = (index + 6) % 24
+      const key = String(hour).padStart(2, '0')
+      return { key, label: key, value: secondsToMinutes(value) }
+    })
+  }
+  const values = new Map<string, number>()
+  activeBooks.value.forEach((book) => {
+    const activityTime = getBookActivityTime(book)
+    if (activityTime <= 0) return
+    const hour = new Date(activityTime).getHours()
+    const key = String(hour).padStart(2, '0')
+    values.set(key, (values.get(key) || 0) + normalizeNumber(book.spec.readingTime))
+  })
+  return Array.from({ length: 24 }, (_, hour) => {
+    const key = String(hour).padStart(2, '0')
+    return { key, label: key, value: values.get(key) || 0 }
+  })
+})
+
+const maxHourValue = computed(() => Math.max(...hourDistribution.value.map((point) => point.value), 1))
+
+const agentMode = (range: StatsRange) => {
+  const map: Record<StatsRange, string> = {
+    week: 'weekly',
+    month: 'monthly',
+    year: 'annually',
+    all: 'overall'
+  }
+  return map[range]
+}
+
+const fetchOfficialReadingStats = async () => {
+  statsLoading.value = true
+  statsError.value = ''
+  try {
+    const params = new URLSearchParams({ mode: agentMode(statsRange.value) })
+    if (statsRange.value === 'year') {
+      const baseTime = Math.floor(new Date(selectedStatsYear.value, 6, 1, 12).getTime() / 1000)
+      params.set('baseTime', String(baseTime))
+    }
+    const res = await fetch(`/api/admin/halo-weread-plugin/reading-stats?${params.toString()}`)
+    if (res.ok) {
+      officialStats.value = await res.json()
+      return
+    }
+    const data = await res.json().catch(() => ({ message: '阅读统计接口不可用' }))
+    officialStats.value = null
+    statsError.value = data.message || '阅读统计接口不可用'
+  } catch (error) {
+    officialStats.value = null
+    statsError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    statsLoading.value = false
+  }
+}
+
+const toggleReadingStats = () => {
+  showReadingStats.value = !showReadingStats.value
+  if (showReadingStats.value && !officialStats.value && !statsLoading.value) {
+    fetchOfficialReadingStats()
+  }
+}
 
 const fetchBooks = async () => {
   loading.value = true
@@ -93,6 +788,9 @@ const fetchBooks = async () => {
     const res = await fetch('/api/admin/halo-weread-plugin/books')
     if (res.ok) {
       books.value = await res.json()
+      if (showReadingStats.value) {
+        fetchOfficialReadingStats()
+      }
     } else {
       message.value = '获取书籍列表失败'
     }
@@ -196,6 +894,18 @@ const message = ref('')
 onMounted(() => {
   fetchBooks()
 })
+
+watch(statsRange, () => {
+  if (showReadingStats.value) {
+    fetchOfficialReadingStats()
+  }
+})
+
+watch(selectedStatsYear, () => {
+  if (showReadingStats.value && statsRange.value === 'year') {
+    fetchOfficialReadingStats()
+  }
+})
 </script>
 
 <template>
@@ -208,36 +918,265 @@ onMounted(() => {
       </div>
     </Transition>
 
-    <!-- 统计面板 -->
-    <div class="stats-grid">
-      <div class="stat-box">
-        <div class="stat-icon book-icon">
-          <span class="icon-text">书籍</span>
-        </div>
-        <div class="stat-content">
-          <div class="stat-value">{{ totalBooks }}</div>
-          <div class="stat-title">已同步书籍</div>
+    <section class="book-toolbar">
+      <div class="toolbar-row">
+        <input
+          v-model="searchQuery"
+          class="book-search"
+          type="search"
+          placeholder="搜索书名或作者"
+        />
+        <select v-model="categoryFilter" class="toolbar-select">
+          <option value="all">全部类型</option>
+          <option v-for="category in categoryOptions.filter((item) => item !== 'all')" :key="category" :value="category">
+            {{ category }}
+          </option>
+        </select>
+        <select v-model="visibilityFilter" class="toolbar-select">
+          <option value="all">全部状态</option>
+          <option value="visible">显示中</option>
+          <option value="hidden">已隐藏</option>
+        </select>
+        <select v-model="readStateFilter" class="toolbar-select">
+          <option value="active">在读+已读</option>
+          <option value="all">全部书籍</option>
+          <option value="reading">在读</option>
+          <option value="finished">已读</option>
+        </select>
+        <div class="toolbar-round-actions">
+          <button class="round-action active" title="刷新书籍" @click="fetchBooks">↻</button>
+          <button
+            class="round-action"
+            :class="{ active: showReadingStats }"
+            title="阅读统计"
+            type="button"
+            @click="toggleReadingStats"
+          >
+            ▥
+          </button>
         </div>
       </div>
-      <div class="stat-box">
-        <div class="stat-icon note-icon">
-          <span class="icon-text">划线</span>
+
+      <div class="toolbar-summary">
+        <div class="summary-item">
+          <span class="summary-icon book"></span>
+          <strong>{{ totalBooks }}</strong>
+          <span>本书</span>
         </div>
-        <div class="stat-content">
-          <div class="stat-value">{{ totalNotes }}</div>
-          <div class="stat-title">划线记录</div>
+        <div class="summary-item">
+          <span class="summary-icon note"></span>
+          <strong>{{ totalNotes + totalReviews }}</strong>
+          <span>个笔记</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-icon calendar"></span>
+          <strong>{{ libraryYears }}</strong>
+          <span>年</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-icon clock"></span>
+          <strong>{{ formatRelativeTime(latestActivityTime) }}</strong>
+        </div>
+        <div class="summary-item">
+          <span class="summary-icon sync"></span>
+          <strong>{{ recentActiveBooks }}</strong>
+          <span>本</span>
         </div>
       </div>
-      <div class="stat-box">
-        <div class="stat-icon review-icon">
-          <span class="icon-text">心得</span>
+    </section>
+
+    <!-- 阅读统计面板 -->
+    <section v-if="showReadingStats" class="reading-panel">
+      <div class="stats-toolbar">
+        <div class="reader-card">
+          <div class="reader-avatar">读</div>
+          <span class="reader-clover">☘</span>
         </div>
-        <div class="stat-content">
-          <div class="stat-value">{{ totalReviews }}</div>
-          <div class="stat-title">想法心得</div>
+        <div class="toolbar-actions">
+          <div class="range-tabs">
+            <button
+              v-for="item in rangeOptions"
+              :key="item.value"
+              class="range-tab"
+              :class="{ active: statsRange === item.value }"
+              @click="statsRange = item.value"
+            >
+              {{ item.label }}
+            </button>
+          </div>
+          <div v-if="statsRange === 'year'" class="year-stepper">
+            <button type="button" :disabled="!canGoPreviousYear" @click="changeStatsYear(-1)">‹</button>
+            <strong>{{ selectedStatsYear }}年</strong>
+            <button type="button" :disabled="!canGoNextYear" @click="changeStatsYear(1)">›</button>
+          </div>
         </div>
       </div>
-    </div>
+
+      <div class="reading-hero">
+        <div class="hero-main">
+          <div class="hero-value stats-duration">
+            <strong>{{ displayDurationParts.hours }}</strong><span>小时</span>
+            <strong>{{ displayDurationParts.minutes }}</strong><span>分钟</span>
+          </div>
+          <div class="hero-sub">
+            <span v-if="statsLoading">正在获取微信读书官方统计...</span>
+            <span v-else-if="statsError">官方统计不可用，已回退本地数据：{{ statsError }}</span>
+            <span v-else>
+              日均阅读 {{ formatDuration(displayAverageMinutes) }}
+              <b v-if="compareText" :class="compareText.up ? 'up' : 'down'"> · {{ compareText.text }}</b>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="stat-card-grid">
+        <div v-for="item in statCards" :key="item.label" class="stat-card">
+          <span class="stat-icon" :class="item.icon"></span>
+          <div class="kpi-value">
+            {{ item.value }}
+            <span v-if="item.unit">{{ item.unit }}</span>
+          </div>
+          <div class="stat-label">
+            <span>{{ item.label }}</span>
+            <b v-if="item.compare" :class="item.compare.up ? 'up' : 'down'">{{ item.compare.text.replace('较上期 ', '') }}</b>
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-layout stats-layout-single">
+        <div class="stats-section time-chart-section year-style">
+          <div class="section-head">
+            <h3>{{ chartTitle }}</h3>
+            <div v-if="statsRange === 'year'" class="chart-switch">
+              <button
+                type="button"
+                :class="{ active: statsChartView === 'heatmap' }"
+                title="热力图"
+                @click="statsChartView = 'heatmap'"
+              >
+                ▦
+              </button>
+              <button
+                type="button"
+                :class="{ active: statsChartView === 'bar' }"
+                title="柱状图"
+                @click="statsChartView = 'bar'"
+              >
+                ▥
+              </button>
+            </div>
+          </div>
+          <div v-if="statsRange === 'year' && statsChartView === 'heatmap'" class="year-heatmap">
+            <div class="annual-heatmap-scroll">
+              <div
+                class="month-axis"
+                :style="{ gridTemplateColumns: `repeat(${heatmapWeeks.length}, minmax(10px, 1fr))` }"
+              >
+                <span
+                  v-for="label in heatmapMonthLabels"
+                  :key="label.month"
+                  :style="{ gridColumn: String(label.column) }"
+                >
+                  {{ label.month }}月
+                </span>
+              </div>
+              <div class="heatmap-wrap annual" :style="{ '--heatmap-week-count': heatmapWeeks.length }">
+                <div v-for="week in heatmapWeeks" :key="week.key" class="heatmap-week">
+                  <div
+                    v-for="cell in week.cells"
+                    :key="cell.key"
+                    class="heatmap-cell"
+                    :class="[`level-${cell.level}`, { empty: cell.empty }]"
+                    :title="cell.label"
+                  ></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-else class="bar-chart" :class="{ dense: chartPoints.length > 18, 'annual-bars': statsRange === 'year' }">
+            <div
+              v-for="point in chartPoints"
+              :key="point.key"
+              class="bar-item"
+              :class="{ future: point.future }"
+              :title="`${point.key} · ${formatDuration(point.value)}`"
+            >
+              <div class="bar-track">
+                <div class="bar-fill" :style="{ height: Math.max(4, Math.round(point.value / maxChartValue * 100)) + '%' }"></div>
+              </div>
+              <span>{{ point.label }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-layout lower">
+        <div class="stats-section top-books-section">
+          <div class="section-head">
+            <h3>阅读时长 Top {{ topReadingBooks.length }}</h3>
+            <span>{{ rangeLabel }}</span>
+          </div>
+          <div v-if="topReadingBooks.length === 0" class="stats-empty">暂无当前范围内的阅读记录</div>
+          <div v-else class="top-book-list">
+            <div v-for="(book, index) in topReadingBooks" :key="book.id" class="top-book">
+              <div class="top-rank">{{ index + 1 }}</div>
+              <img v-if="book.cover" :src="book.cover" class="top-cover" />
+              <div v-else class="top-cover placeholder"></div>
+              <div class="top-book-info">
+                <div class="top-title">{{ book.title }}</div>
+                <div class="top-meta">{{ book.author }} · {{ book.category }}</div>
+                <div class="mini-progress">
+                  <span :style="{ width: Math.min(book.progress || 0, 100) + '%' }"></span>
+                </div>
+              </div>
+              <div class="top-duration">{{ formatDuration(book.readingMinutes) }}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="stats-section preference-section">
+          <div class="section-head">
+            <h3>偏好分析</h3>
+            <span>分类 / 作者 / 时段</span>
+          </div>
+          <div class="preference-block">
+            <div class="preference-title">分类偏好</div>
+            <div v-for="item in categoryPreferences" :key="item.label" class="preference-row">
+              <span>{{ item.label }}</span>
+              <div class="preference-bar"><i :style="{ width: item.percent + '%' }"></i></div>
+              <em>{{ item.value }}</em>
+            </div>
+          </div>
+          <div class="preference-block">
+            <div class="preference-title">偏好作者</div>
+            <div v-for="item in authorPreferences" :key="item.label" class="author-pill">
+              <span>{{ item.label }}</span>
+              <em>{{ item.value }}本</em>
+            </div>
+          </div>
+          <div class="preference-block">
+            <div class="preference-title">24 小时阅读时段</div>
+            <div class="hour-chart">
+              <div
+                v-for="point in hourDistribution"
+                :key="point.key"
+                class="hour-bar"
+                :title="`${point.label}:00 · ${formatDuration(point.value)}`"
+              >
+                <span :style="{ height: Math.max(3, Math.round(point.value / maxHourValue * 100)) + '%' }"></span>
+              </div>
+            </div>
+            <div class="hour-axis">
+              <span>0</span>
+              <span>6</span>
+              <span>12</span>
+              <span>18</span>
+              <span>23</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <!-- 列表区域 -->
     <div class="list-wrapper">
@@ -256,7 +1195,7 @@ onMounted(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="book in books" :key="book.metadata.name" :class="{ 'row-hidden': book.spec.hidden }">
+          <tr v-for="book in filteredBooks" :key="book.metadata.name" :class="{ 'row-hidden': book.spec.hidden }">
             <td>
               <div class="book-cover-wrapper">
                 <img v-if="book.spec.cover" :src="book.spec.cover" class="book-cover" />
@@ -312,7 +1251,7 @@ onMounted(() => {
 
       <!-- 移动端卡片列表 -->
       <div class="mobile-only book-cards">
-        <div v-for="book in books" :key="book.metadata.name" class="book-card" :class="{ 'card-hidden': book.spec.hidden }">
+        <div v-for="book in filteredBooks" :key="book.metadata.name" class="book-card" :class="{ 'card-hidden': book.spec.hidden }">
           <div class="card-main">
             <div class="book-cover-wrapper">
               <img v-if="book.spec.cover" :src="book.spec.cover" class="book-cover" />
@@ -457,8 +1396,9 @@ onMounted(() => {
 .bl-container {
   padding: 24px;
   animation: fadeIn 0.3s ease-out;
-  max-width: 1200px;
+  max-width: 1480px;
   margin: 0 auto;
+  background: #f8fafc;
 }
 
 @keyframes fadeIn {
@@ -520,72 +1460,1064 @@ onMounted(() => {
   transform: translate(-50%, -20px);
 }
 
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 20px;
-  margin-bottom: 24px;
+.book-toolbar {
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid #e4e9f1;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
 }
 
-.stat-box {
+.toolbar-row {
+  display: grid;
+  grid-template-columns: minmax(200px, 1.5fr) repeat(3, minmax(108px, 0.45fr)) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.book-search,
+.toolbar-select {
+  width: 100%;
+  height: 30px;
+  border: 1px solid #d7dee8;
+  border-radius: 7px;
+  color: #172033;
   background: #fff;
-  border: 1px solid #eef0f2;
-  border-radius: 16px;
-  padding: 20px;
+  box-shadow: none;
+  font-size: 0.68rem;
+  font-weight: 700;
+  box-sizing: border-box;
+}
+
+.book-search {
+  padding: 0 10px;
+}
+
+.book-search::placeholder {
+  color: #94a3b8;
+}
+
+.toolbar-select {
+  padding: 0 22px 0 10px;
+}
+
+.toolbar-round-actions {
   display: flex;
   align-items: center;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-  transition: transform 0.2s, box-shadow 0.2s;
+  justify-content: flex-end;
+  gap: 5px;
 }
 
-.stat-box:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05);
-}
-
-.stat-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 12px;
-  display: flex;
+.round-action {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-right: 16px;
+  border: 1px solid #d7dee8;
+  border-radius: 50%;
+  color: #64748b;
+  background: #fff;
+  cursor: pointer;
+  box-shadow: none;
+  font-size: 0.5rem;
+  font-weight: 800;
+  line-height: 1;
+  transition: all 0.18s ease;
+}
+
+.round-action:hover {
+  border-color: #93c5fd;
+  color: #2563eb;
+}
+
+.round-action.active {
+  border-color: #bfdbfe;
+  color: #0f172a;
+  background: #bfdbfe;
+}
+
+.toolbar-summary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 12px;
+  color: #334155;
+  flex-wrap: wrap;
+}
+
+.summary-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 18px;
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+
+.summary-item strong {
+  color: #172033;
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.summary-icon {
+  position: relative;
+  width: 15px;
+  height: 15px;
+  display: inline-block;
+  color: #64748b;
   flex-shrink: 0;
 }
 
-.icon-text {
-  font-size: 0.7rem;
-  font-weight: 700;
-  text-transform: uppercase;
+.summary-icon.book {
+  border: 1px solid currentColor;
+  border-radius: 3px;
 }
 
-.book-icon {
-  background: #eff6ff;
-  color: #3b82f6;
+.summary-icon.book::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  bottom: 3px;
+  height: 1px;
+  background: currentColor;
 }
 
-.note-icon {
-  background: #f0fdf4;
-  color: #22c55e;
+.summary-icon.note::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  width: 15px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  transform: rotate(-45deg);
 }
 
-.review-icon {
-  background: #fff7ed;
-  color: #f97316;
+.summary-icon.note::after {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 1px;
+  width: 5px;
+  height: 11px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  transform: rotate(45deg);
 }
 
-.stat-value {
-  font-size: 1.5rem;
+.summary-icon.calendar {
+  border: 1px solid currentColor;
+  border-radius: 4px;
+}
+
+.summary-icon.calendar::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: 5px;
+  height: 1px;
+  background: currentColor;
+}
+
+.summary-icon.clock {
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+
+.summary-icon.clock::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 3px;
+  width: 1px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.summary-icon.clock::after {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 8px;
+  width: 5px;
+  height: 1px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.summary-icon.sync::before {
+  content: "↻";
+  position: absolute;
+  inset: -1px 0 0;
+  font-size: 0.82rem;
+  line-height: 1;
+  font-weight: 900;
+}
+
+.reading-panel {
+  margin-bottom: 24px;
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: none;
+}
+
+.stats-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.reader-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.reader-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #dbeafe;
+  color: #2563eb;
+  font-size: 0.62rem;
   font-weight: 800;
-  color: #0f172a;
-  line-height: 1.2;
+  flex-shrink: 0;
 }
 
-.stat-title {
-  font-size: 0.8rem;
+.reader-clover {
+  color: #22c55e;
+  font-size: 0.68rem;
+  line-height: 1;
+}
+
+.reader-name {
+  color: #0f172a;
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.reader-desc {
+  margin-top: 3px;
   color: #64748b;
-  margin-top: 2px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex: 1;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.range-tabs {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.range-tab {
+  border: none;
+  cursor: pointer;
+  font-weight: 700;
+  transition: all 0.2s;
+}
+
+.range-tab {
+  min-width: 48px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 7px;
+  color: #111827;
+  background: transparent;
+  font-size: 0.72rem;
+  box-shadow: inset 0 0 0 1px #e5e7eb;
+}
+
+.range-tab.active {
+  background: #eef5ff;
+  color: #93c5fd;
+  box-shadow: none;
+}
+
+.year-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px;
+  border: 1px solid #eef2f7;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.year-stepper button {
+  width: 26px;
+  height: 26px;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  color: #111827;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.78rem;
+  line-height: 1;
+  box-shadow: none;
+}
+
+.year-stepper button:disabled {
+  color: #cbd5e1;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.year-stepper strong {
+  min-width: 62px;
+  color: #111827;
+  font-size: 0.82rem;
+  text-align: center;
+  font-weight: 850;
+}
+
+.reading-hero {
+  display: block;
+  padding: 16px 20px;
+  border: 1px solid #edf1f7;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.hero-value {
+  margin-top: 0;
+  color: #0f172a;
+  line-height: 1.1;
+  font-weight: 900;
+}
+
+.stats-duration {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.stats-duration strong {
+  color: #18181b;
+  font-size: 1.9rem;
+  line-height: 1;
+  font-weight: 900;
+}
+
+.stats-duration span {
+  color: #18181b;
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.hero-sub {
+  margin-top: 10px;
+  color: #4b5563;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.hero-sub b {
+  font-weight: 850;
+}
+
+.hero-sub b.up {
+  color: #16a34a;
+}
+
+.hero-sub b.down {
+  color: #dc2626;
+}
+
+.hero-side {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.mini-stat {
+  min-width: 64px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid #dbeafe;
+  text-align: center;
+}
+
+.mini-stat span {
+  display: block;
+  color: #0f172a;
+  font-size: 0.95rem;
+  font-weight: 900;
+}
+
+.mini-stat em {
+  display: block;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.stat-card-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.stat-card {
+  min-width: 0;
+  min-height: 68px;
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  align-items: center;
+  column-gap: 8px;
+  padding: 12px;
+  border: 1px solid #edf1f7;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.stat-card .kpi-value {
+  margin-top: 0;
+  color: #18181b;
+  font-size: 1.22rem;
+  font-weight: 900;
+}
+
+.stat-card .kpi-value span {
+  margin-left: 2px;
+  color: #18181b;
+  font-size: 0.68rem;
+  font-weight: 850;
+}
+
+.stat-label {
+  grid-column: 2;
+  color: #4b5563;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.stat-label b {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  font-size: 0.62rem;
+}
+
+.stat-label b.up {
+  color: #16a34a;
+  background: #dcfce7;
+}
+
+.stat-label b.down {
+  color: #dc2626;
+  background: #fee2e2;
+}
+
+.stat-icon {
+  position: relative;
+  width: 15px;
+  height: 15px;
+  color: #bfdbfe;
+}
+
+.stat-icon.calendar {
+  border: 1px solid currentColor;
+  border-radius: 4px;
+}
+
+.stat-icon.calendar::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: 5px;
+  height: 1px;
+  background: currentColor;
+}
+
+.stat-icon.trend::before {
+  content: "↗";
+  position: absolute;
+  inset: -5px 0 0;
+  font-size: 1.15rem;
+  font-weight: 500;
+}
+
+.stat-icon.book {
+  border: 1px solid currentColor;
+  border-radius: 3px;
+}
+
+.stat-icon.book::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 50%;
+  width: 1px;
+  background: currentColor;
+}
+
+.stat-icon.check {
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+
+.stat-icon.check::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 6px;
+  width: 7px;
+  height: 4px;
+  border-left: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(-45deg);
+}
+
+.stat-icon.pen::before {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: 10px;
+  width: 15px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  transform: rotate(-45deg);
+}
+
+.stat-icon.pen::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 1px;
+  width: 4px;
+  height: 11px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  transform: rotate(45deg);
+}
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.kpi-card {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #eef2f7;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.kpi-label {
+  color: #64748b;
+  font-size: 0.62rem;
+  font-weight: 800;
+}
+
+.kpi-value {
+  margin-top: 6px;
+  color: #0f172a;
+  font-size: 0.92rem;
+  font-weight: 900;
+  line-height: 1.15;
+}
+
+.kpi-value span {
+  margin-left: 2px;
+  color: #64748b;
+  font-size: 0.6rem;
+  font-weight: 700;
+}
+
+.kpi-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 8px;
+  color: #94a3b8;
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.kpi-footer b {
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.kpi-footer b.up {
+  color: #047857;
+  background: #d1fae5;
+}
+
+.kpi-footer b.down {
+  color: #b91c1c;
+  background: #fee2e2;
+}
+
+.stats-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.85fr);
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.stats-layout-single {
+  grid-template-columns: 1fr;
+}
+
+.stats-layout.lower {
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.9fr);
+}
+
+.stats-section {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #eef2f7;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.stats-section.year-style {
+  margin-top: 18px;
+  padding: 0;
+  border: none;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.section-head h3 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 0.95rem;
+  font-weight: 900;
+}
+
+.section-head span {
+  color: #94a3b8;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.chart-switch {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid #edf1f7;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.chart-switch button {
+  width: 24px;
+  height: 24px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  color: #9ca3af;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
+.chart-switch button.active {
+  color: #93c5fd;
+  background: #f8fbff;
+}
+
+.bar-chart {
+  height: 160px;
+  display: flex;
+  align-items: end;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.annual-bars {
+  height: 210px;
+  padding: 16px 4px 6px;
+}
+
+.annual-bars .bar-track {
+  max-width: 44px;
+  height: 178px;
+  border-radius: 7px 7px 0 0;
+  background: transparent;
+}
+
+.annual-bars .bar-fill {
+  border-radius: 7px 7px 0 0;
+  background: #bfdbfe;
+}
+
+.bar-chart.dense {
+  gap: 4px;
+}
+
+.bar-item {
+  min-width: 22px;
+  flex: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.bar-chart.dense .bar-item {
+  min-width: 18px;
+}
+
+.bar-track {
+  width: 100%;
+  max-width: 18px;
+  height: 128px;
+  display: flex;
+  align-items: flex-end;
+  border-radius: 999px;
+  background: #f1f5f9;
+  overflow: hidden;
+}
+
+.bar-fill {
+  width: 100%;
+  min-height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
+}
+
+.bar-item.future .bar-fill {
+  opacity: 0.22;
+}
+
+.bar-item span {
+  color: #94a3b8;
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+
+.heatmap-wrap {
+  display: flex;
+  gap: 4px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.year-heatmap {
+  padding-top: 12px;
+}
+
+.annual-heatmap-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.month-axis {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-width: 700px;
+  margin-bottom: 8px;
+  color: #9ca3af;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.month-axis span {
+  white-space: nowrap;
+}
+
+.heatmap-wrap.annual {
+  display: grid;
+  grid-template-columns: repeat(var(--heatmap-week-count, 53), minmax(10px, 1fr));
+  gap: 3px;
+  width: 100%;
+  min-width: 700px;
+  overflow-x: visible;
+  padding: 0 0 8px;
+}
+
+.heatmap-week {
+  display: grid;
+  grid-template-rows: repeat(7, minmax(10px, 1fr));
+  gap: 3px;
+}
+
+.heatmap-cell {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 2px;
+  background: #eef2f7;
+}
+
+.heatmap-cell.empty {
+  visibility: hidden;
+}
+
+.heatmap-cell.level-1,
+.heatmap-legend .level-1 {
+  background: #bfdbfe;
+}
+
+.heatmap-cell.level-2,
+.heatmap-legend .level-2 {
+  background: #60a5fa;
+}
+
+.heatmap-cell.level-3,
+.heatmap-legend .level-3 {
+  background: #2563eb;
+}
+
+.heatmap-cell.level-4,
+.heatmap-legend .level-4 {
+  background: #1e3a8a;
+}
+
+.heatmap-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  margin-top: 10px;
+  color: #94a3b8;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.heatmap-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: #eef2f7;
+}
+
+.top-book-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.top-book {
+  display: grid;
+  grid-template-columns: 28px 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.top-rank {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #2563eb;
+  background: #dbeafe;
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
+.top-cover {
+  width: 42px;
+  height: 58px;
+  object-fit: cover;
+  border-radius: 6px;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.14);
+}
+
+.top-cover.placeholder {
+  background: #f1f5f9;
+}
+
+.top-title {
+  color: #0f172a;
+  font-size: 0.86rem;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.top-meta {
+  margin-top: 3px;
+  color: #94a3b8;
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mini-progress {
+  height: 5px;
+  margin-top: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #f1f5f9;
+}
+
+.mini-progress span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: #2563eb;
+}
+
+.top-duration {
+  color: #334155;
+  font-size: 0.78rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.preference-block + .preference-block {
+  margin-top: 14px;
+}
+
+.preference-title {
+  margin-bottom: 8px;
+  color: #475569;
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.preference-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.preference-row span,
+.author-pill span {
+  color: #334155;
+  font-size: 0.82rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preference-row em,
+.author-pill em {
+  color: #94a3b8;
+  font-size: 0.78rem;
+  font-style: normal;
+  font-weight: 800;
+  text-align: right;
+}
+
+.preference-bar {
+  height: 7px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #f1f5f9;
+}
+
+.preference-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: #60a5fa;
+}
+
+.author-pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: 10px;
+  background: #f8fafc;
+  margin-bottom: 6px;
+}
+
+.hour-chart {
+  height: 58px;
+  display: grid;
+  grid-template-columns: repeat(24, 1fr);
+  gap: 3px;
+  align-items: end;
+}
+
+.hour-bar {
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  border-radius: 999px;
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+.hour-bar span {
+  display: block;
+  width: 100%;
+  border-radius: 999px;
+  background: #2563eb;
+}
+
+.hour-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 5px;
+  color: #94a3b8;
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.stats-empty {
+  padding: 30px 0;
+  color: #94a3b8;
+  text-align: center;
+  font-size: 0.82rem;
 }
 
 .list-wrapper {
@@ -877,13 +2809,128 @@ input:checked + .slider:before {
     padding: 16px;
   }
 
-  .stats-grid {
-    grid-template-columns: 1fr;
-    gap: 12px;
+  .book-toolbar {
+    padding: 10px;
   }
 
-  .stat-box {
-    padding: 16px;
+  .toolbar-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .toolbar-round-actions {
+    justify-content: space-between;
+    gap: 6px;
+  }
+
+  .round-action {
+    width: 22px;
+    height: 22px;
+    font-size: 0.5rem;
+  }
+
+  .toolbar-summary {
+    gap: 12px;
+    margin-top: 10px;
+  }
+
+  .summary-item {
+    font-size: 0.6rem;
+  }
+
+  .summary-item strong {
+    font-size: 0.7rem;
+  }
+
+  .reading-panel {
+    padding: 14px;
+  }
+
+  .stats-toolbar,
+  .toolbar-actions,
+  .reading-hero {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .toolbar-actions {
+    gap: 10px;
+  }
+
+  .range-tabs {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .range-tab {
+    flex: 1;
+    height: 26px;
+    padding: 0 8px;
+    font-size: 0.68rem;
+  }
+
+  .year-stepper {
+    justify-content: space-between;
+  }
+
+  .hero-value {
+    font-size: 1.2rem;
+  }
+
+  .stats-duration strong {
+    font-size: 1.8rem;
+  }
+
+  .stats-duration span {
+    font-size: 0.72rem;
+  }
+
+  .hero-side {
+    width: 100%;
+  }
+
+  .mini-stat {
+    flex: 1;
+  }
+
+  .kpi-grid,
+  .stat-card-grid,
+  .stats-layout,
+  .stats-layout.lower {
+    grid-template-columns: 1fr;
+  }
+
+  .stat-card {
+    min-height: 62px;
+    padding: 11px;
+  }
+
+  .stat-card .kpi-value {
+    font-size: 1.16rem;
+  }
+
+  .bar-chart {
+    height: 140px;
+  }
+
+  .annual-bars {
+    height: 180px;
+  }
+
+  .annual-bars .bar-track {
+    height: 150px;
+  }
+
+  .bar-track {
+    height: 104px;
+  }
+
+  .top-book {
+    grid-template-columns: 24px 36px minmax(0, 1fr);
+  }
+
+  .top-duration {
+    grid-column: 3;
   }
 
   .desktop-only {
