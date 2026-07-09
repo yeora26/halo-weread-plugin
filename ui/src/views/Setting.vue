@@ -162,8 +162,7 @@ onMounted(() => {
           <strong>{{ cookieUserName || '未知' }}</strong>
         </div>
         <button class="icon-btn" title="CookieCloud 配置" @click="cloudModalOpen = true">
-          <span></span>
-          <span></span>
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-menu-icon lucide-menu"><path d="M4 5h16"/><path d="M4 12h16"/><path d="M4 19h16"/></svg>
         </button>
       </div>
 
@@ -171,7 +170,6 @@ onMounted(() => {
         <div>
           <h3>Cookie 状态</h3>
           <p :class="{ ok: cookieValid, bad: !cookieValid }">
-            <span class="status-mark">{{ cookieValid ? '✓' : '!' }}</span>
             {{ cookieStatusText }}
           </p>
         </div>
@@ -279,7 +277,7 @@ onMounted(() => {
 h2 {
   margin: 0;
   color: #111827;
-  font-size: 0.98rem;
+  font-size: 1.2rem;
   font-weight: 800;
   letter-spacing: 0;
 }
@@ -303,33 +301,13 @@ h2 {
 
 .account-text {
   color: #172033;
-  font-size: 0.72rem;
+  font-size: 1rem;
   font-weight: 700;
 }
 
 .account-text strong {
   color: #16794c;
   font-weight: 900;
-}
-
-.icon-btn {
-  width: 25px;
-  height: 22px;
-  border: 1px solid #d7dee8;
-  border-radius: 6px;
-  background: #f8fafc;
-  box-shadow: none;
-  cursor: pointer;
-  position: relative;
-}
-
-.icon-btn span {
-  position: absolute;
-  left: 7px;
-  width: 11px;
-  height: 1px;
-  border-radius: 999px;
-  background: #334155;
 }
 
 .icon-btn span:first-child {
@@ -365,7 +343,7 @@ h2 {
 .api-card h3 {
   margin: 0;
   color: #111827;
-  font-size: 0.74rem;
+  font-size: 1rem;
   font-weight: 760;
 }
 
@@ -386,24 +364,6 @@ h2 {
 
 .status-card p.bad {
   color: #b91c1c;
-}
-
-.status-mark {
-  display: inline-flex;
-  width: 12px;
-  height: 12px;
-  align-items: center;
-  justify-content: center;
-  margin-right: 4px;
-  border-radius: 3px;
-  color: #fff;
-  background: #22c55e;
-  font-size: 0.52rem;
-  font-weight: 900;
-}
-
-.bad .status-mark {
-  background: #ef4444;
 }
 
 .primary-action,
@@ -598,16 +558,6 @@ h2 {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 10px;
-}
-
-.modal-fade-enter-active,
-.modal-fade-leave-active {
-  transition: opacity 0.2s;
-}
-
-.modal-fade-enter-from,
-.modal-fade-leave-to {
-  opacity: 0;
 }
 
 @media (max-width: 820px) {

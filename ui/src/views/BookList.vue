@@ -171,7 +171,7 @@ const loading = ref(false)
 const searchQuery = ref('')
 const categoryFilter = ref('all')
 const visibilityFilter = ref('all')
-const readStateFilter = ref('active')
+const readStateFilter = ref('all')
 const showReadingStats = ref(false)
 const statsRange = ref<StatsRange>('year')
 const selectedStatsYear = ref(new Date().getFullYear())
@@ -229,7 +229,6 @@ const filteredBooks = computed(() => {
       || (visibilityFilter.value === 'visible' && !book.spec.hidden)
       || (visibilityFilter.value === 'hidden' && book.spec.hidden)
     const matchesReadState = readStateFilter.value === 'all'
-      || (readStateFilter.value === 'active' && !book.spec.hidden)
       || (readStateFilter.value === 'reading' && !isFinished(book))
       || (readStateFilter.value === 'finished' && isFinished(book))
     return matchesQuery && matchesCategory && matchesVisibility && matchesReadState
@@ -881,6 +880,12 @@ const formatTime = (ts: number) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+const formatDate = (ts: number) => {
+  if (!ts) return '--'
+  const d = new Date(ts)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 const formatDuration = (minutes: number) => {
   if (!minutes) return '0分'
   if (minutes < 60) return minutes + '分'
@@ -926,61 +931,67 @@ watch(selectedStatsYear, () => {
           type="search"
           placeholder="搜索书名或作者"
         />
-        <select v-model="categoryFilter" class="toolbar-select">
-          <option value="all">全部类型</option>
-          <option v-for="category in categoryOptions.filter((item) => item !== 'all')" :key="category" :value="category">
-            {{ category }}
-          </option>
-        </select>
-        <select v-model="visibilityFilter" class="toolbar-select">
-          <option value="all">全部状态</option>
-          <option value="visible">显示中</option>
-          <option value="hidden">已隐藏</option>
-        </select>
-        <select v-model="readStateFilter" class="toolbar-select">
-          <option value="active">在读+已读</option>
-          <option value="all">全部书籍</option>
-          <option value="reading">在读</option>
-          <option value="finished">已读</option>
-        </select>
+        <div class="select-wrapper">
+          <select v-model="categoryFilter" class="toolbar-select">
+            <option value="all">全部类型</option>
+            <option v-for="category in categoryOptions.filter((item) => item !== 'all')" :key="category" :value="category">
+              {{ category }}
+            </option>
+          </select>
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="select-chevron"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>
+        </div>
+        <div class="select-wrapper">
+          <select v-model="visibilityFilter" class="toolbar-select">
+            <option value="all">全部状态</option>
+            <option value="visible">显示中</option>
+            <option value="hidden">已隐藏</option>
+          </select>
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="select-chevron"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>
+        </div>
+        <div class="select-wrapper">
+          <select v-model="readStateFilter" class="toolbar-select">
+            <option value="all">全部书籍</option>
+            <option value="reading">在读</option>
+            <option value="finished">已读</option>
+          </select>
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="select-chevron"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>
+        </div>
         <div class="toolbar-round-actions">
-          <button class="round-action active" title="刷新书籍" @click="fetchBooks">↻</button>
           <button
-            class="round-action"
+            class="view-toggle-btn"
             :class="{ active: showReadingStats }"
             title="阅读统计"
             type="button"
-            @click="toggleReadingStats"
+            @click="!showReadingStats && toggleReadingStats()"
           >
-            ▥
+            <svg class="view-toggle-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="4" y="4" width="5" height="5" rx="1.4" />
+              <rect x="9.5" y="4" width="5" height="5" rx="1.4" />
+              <rect x="15" y="4" width="5" height="5" rx="1.4" />
+              <rect x="4" y="9.5" width="5" height="5" rx="1.4" />
+              <rect x="9.5" y="9.5" width="5" height="5" rx="1.4" />
+              <rect x="15" y="9.5" width="5" height="5" rx="1.4" />
+              <rect x="4" y="15" width="5" height="5" rx="1.4" />
+              <rect x="9.5" y="15" width="5" height="5" rx="1.4" />
+              <rect x="15" y="15" width="5" height="5" rx="1.4" />
+            </svg>
           </button>
-        </div>
-      </div>
-
-      <div class="toolbar-summary">
-        <div class="summary-item">
-          <span class="summary-icon book"></span>
-          <strong>{{ totalBooks }}</strong>
-          <span>本书</span>
-        </div>
-        <div class="summary-item">
-          <span class="summary-icon note"></span>
-          <strong>{{ totalNotes + totalReviews }}</strong>
-          <span>个笔记</span>
-        </div>
-        <div class="summary-item">
-          <span class="summary-icon calendar"></span>
-          <strong>{{ libraryYears }}</strong>
-          <span>年</span>
-        </div>
-        <div class="summary-item">
-          <span class="summary-icon clock"></span>
-          <strong>{{ formatRelativeTime(latestActivityTime) }}</strong>
-        </div>
-        <div class="summary-item">
-          <span class="summary-icon sync"></span>
-          <strong>{{ recentActiveBooks }}</strong>
-          <span>本</span>
+          <button
+            class="view-toggle-btn"
+            :class="{ active: !showReadingStats }"
+            title="书籍列表"
+            type="button"
+            @click="showReadingStats && toggleReadingStats()"
+          >
+            <svg class="view-toggle-icon list-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="5.5" cy="6.5" r="1.5" />
+              <circle cx="5.5" cy="12" r="1.5" />
+              <circle cx="5.5" cy="17.5" r="1.5" />
+              <rect x="9" y="5.25" width="11" height="2.5" rx="1.25" />
+              <rect x="9" y="10.75" width="11" height="2.5" rx="1.25" />
+              <rect x="9" y="16.25" width="11" height="2.5" rx="1.25" />
+            </svg>
+          </button>
         </div>
       </div>
     </section>
@@ -988,10 +999,6 @@ watch(selectedStatsYear, () => {
     <!-- 阅读统计面板 -->
     <section v-if="showReadingStats" class="reading-panel">
       <div class="stats-toolbar">
-        <div class="reader-card">
-          <div class="reader-avatar">读</div>
-          <span class="reader-clover">☘</span>
-        </div>
         <div class="toolbar-actions">
           <div class="range-tabs">
             <button
@@ -1028,7 +1035,6 @@ watch(selectedStatsYear, () => {
           </div>
         </div>
       </div>
-
       <div class="stat-card-grid">
         <div v-for="item in statCards" :key="item.label" class="stat-card">
           <span class="stat-icon" :class="item.icon"></span>
@@ -1187,11 +1193,11 @@ watch(selectedStatsYear, () => {
             <th width="60">封面</th>
             <th>书名与作者</th>
             <th width="100">阅读进度</th>
-            <th width="100">阅读时长</th>
+            <th width="110">阅读时长</th>
             <th width="80" class="text-center">划线</th>
             <th width="80" class="text-center">想法</th>
             <th width="150">最后阅读</th>
-            <th width="120" class="text-center">操作</th>
+            <th width="160" class="text-center">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -1222,26 +1228,33 @@ watch(selectedStatsYear, () => {
             <td class="text-muted fs-12">{{ formatDuration(book.spec.readingTime) }}</td>
             <td class="text-center fw-500">{{ book.spec.noteCount || 0 }}</td>
             <td class="text-center fw-500">{{ book.spec.reviewCount || 0 }}</td>
-            <td class="text-muted fs-11">{{ formatTime(book.spec.lastReadTime) }}</td>
+            <td class="text-muted fs-11">{{ formatDate(book.spec.lastReadTime) }}</td>
             <td class="text-center">
               <div class="row-actions">
                 <button
                   v-if="(book.spec.noteCount || 0) + (book.spec.reviewCount || 0) > 0"
-                  class="h-btn-text notes-btn"
+                  class="row-action-btn notes-btn"
                   @click="openDrawer(book)"
                   title="查看笔记"
                 >
-                  笔记
+                  <svg class="row-action-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M7 2.75v3.5M17 2.75v3.5M11 2.75v3.5M6.75 5h10.5A3.75 3.75 0 0 1 21 8.75v9.5A3.75 3.75 0 0 1 17.25 22H6.75A3.75 3.75 0 0 1 3 18.25v-9.5A3.75 3.75 0 0 1 6.75 5Z" />
+                    <path d="M7.5 10.5h9M7.5 15h5" />
+                  </svg>
+                  <span>笔记</span>
                 </button>
-                <div class="switch-wrapper" :title="book.spec.hidden ? '当前已隐藏' : '当前已显示'">
+                <div class="switch-wrapper row-visibility-action" :title="book.spec.hidden ? '当前已隐藏' : '当前已显示'">
                   <label class="h-switch">
                     <input type="checkbox" :checked="book.spec.hidden" @change="toggleVisibility(book)">
                     <span class="slider round"></span>
                   </label>
                   <span class="switch-label">{{ book.spec.hidden ? '隐藏' : '显示' }}</span>
                 </div>
-                <button class="h-btn-text danger" @click="deleteBook(book.metadata.name, book.spec.title)" title="删除书籍">
-                  删除
+                <button class="row-action-btn danger" @click="deleteBook(book.metadata.name, book.spec.title)" title="删除书籍">
+                  <svg class="row-action-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 7h16M10 11v6M14 11v6M9 7l.75-3h4.5L15 7M6.5 7l.75 13h9.5L17.5 7" />
+                  </svg>
+                  <span>删除</span>
                 </button>
               </div>
             </td>
@@ -1283,10 +1296,13 @@ watch(selectedStatsYear, () => {
           </div>
           <div class="card-footer">
             <div class="card-progress">
+              <div class="progress-header">
+                <span class="progress-label">阅读进度</span>
+                <span class="progress-text">{{ (book.spec.progress || 0).toFixed(1) }}%</span>
+              </div>
               <div class="progress-bar-bg">
                 <div class="progress-bar-fill" :style="{ width: Math.min(book.spec.progress || 0, 100) + '%' }"></div>
               </div>
-              <span class="progress-text">{{ (book.spec.progress || 0).toFixed(1) }}%</span>
             </div>
           </div>
         </div>
@@ -1421,21 +1437,13 @@ watch(selectedStatsYear, () => {
   z-index: 9999;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   padding: 10px 20px;
   border-radius: 12px;
   background: #fff;
   box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
   min-width: 200px;
   border: 1px solid #eef0f2;
-}
-
-.h-toast.success {
-  border-left: 4px solid #10b981;
-}
-
-.h-toast.error {
-  border-left: 4px solid #ef4444;
 }
 
 .toast-icon {
@@ -1473,19 +1481,19 @@ watch(selectedStatsYear, () => {
   display: grid;
   grid-template-columns: minmax(200px, 1.5fr) repeat(3, minmax(108px, 0.45fr)) auto;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
 }
 
 .book-search,
 .toolbar-select {
   width: 100%;
-  height: 30px;
+  height: 42px;
   border: 1px solid #d7dee8;
   border-radius: 7px;
   color: #172033;
   background: #fff;
   box-shadow: none;
-  font-size: 0.68rem;
+  font-size: 1rem;
   font-weight: 700;
   box-sizing: border-box;
 }
@@ -1498,6 +1506,25 @@ watch(selectedStatsYear, () => {
   color: #94a3b8;
 }
 
+.select-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.select-wrapper .toolbar-select {
+  width: 100%;
+  padding-right: 32px;
+  appearance: none;
+}
+
+.select-chevron {
+  position: absolute;
+  right: 8px;
+  pointer-events: none;
+  color: #94a3b8;
+}
+
 .toolbar-select {
   padding: 0 22px 0 10px;
 }
@@ -1506,36 +1533,50 @@ watch(selectedStatsYear, () => {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 5px;
+  width: 142px;
+  height: 42px;
+  padding: 3px;
+  border: 1px solid #dbe3ef;
+  border-radius: 18px;
+  background: #fbfdff;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.05), 0 8px 20px rgba(15, 23, 42, 0.06);
 }
 
-.round-action {
-  width: 22px;
-  height: 22px;
+.view-toggle-btn {
+  width: 68px;
+  height: 34px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #d7dee8;
-  border-radius: 50%;
-  color: #64748b;
-  background: #fff;
+  border: 1px solid transparent;
+  border-radius: 15px;
+  color: #9aa6b8;
+  background: transparent;
   cursor: pointer;
-  box-shadow: none;
-  font-size: 0.5rem;
-  font-weight: 800;
-  line-height: 1;
-  transition: all 0.18s ease;
+  transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
-.round-action:hover {
-  border-color: #93c5fd;
+.view-toggle-btn:hover {
   color: #2563eb;
 }
 
-.round-action.active {
+.view-toggle-btn.active {
+  color: #2563eb;
   border-color: #bfdbfe;
-  color: #0f172a;
-  background: #bfdbfe;
+  background: linear-gradient(180deg, #f8fbff 0%, #edf5ff 100%);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.16);
+}
+
+.view-toggle-icon {
+  width: 24px;
+  height: 24px;
+  display: block;
+  fill: currentColor;
+}
+
+.view-toggle-icon.list-icon {
+  width: 25px;
+  height: 25px;
 }
 
 .toolbar-summary {
@@ -2632,46 +2673,64 @@ watch(selectedStatsYear, () => {
   font-weight: 600;
 }
 
-.h-btn-text {
-  background: transparent;
-  border: 1px solid #e2e8f0;
-  padding: 4px 12px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  color: #64748b;
-  transition: all 0.2s;
-  line-height: 1;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.h-btn-text.danger {
-  color: #ef4444;
-  border-color: #fee2e2;
-}
-
-.h-btn-text.danger:hover {
-  background: #fef2f2;
-  border-color: #fecaca;
-}
-
-.h-btn-text.notes-btn {
-  color: #3b82f6;
-  border-color: #bfdbfe;
-}
-
-.h-btn-text.notes-btn:hover {
-  background: #eff6ff;
-  border-color: #93c5fd;
-}
-
 .row-actions {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 8px;
+  min-width: 100px;
+}
+
+.row-action-btn {
+  min-width: 50px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 0 6px;
+  border: 1px solid #bfdbfe;
+  border-radius: 9px;
+  color: #2563eb;
+  background: #f8fbff;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.08);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+}
+
+.row-action-btn:hover {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  box-shadow: 0 10px 22px rgba(37, 99, 235, 0.14);
+  transform: translateY(-1px);
+}
+
+.row-action-btn.danger {
+  color: #ef4444;
+  border-color: #fecaca;
+  background: #fffafa;
+  box-shadow: 0 8px 18px rgba(239, 68, 68, 0.08);
+}
+
+.row-action-btn.danger:hover {
+  border-color: #fca5a5;
+  background: #fef2f2;
+  box-shadow: 0 10px 22px rgba(239, 68, 68, 0.14);
+}
+
+.row-action-icon {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .switch-wrapper {
@@ -2682,16 +2741,28 @@ watch(selectedStatsYear, () => {
 
 .switch-label {
   font-size: 12px;
-  color: #64748b;
-  min-width: 28px;
+  color: #1f2937;
+  font-weight: 800;
+  min-width: 24px;
+}
+
+.row-visibility-action {
+  height: 26px;
+  gap: 4px;
+  padding: 0 6px;
+  border: 1px solid #e5e7eb;
+  border-radius: 9px;
+  background: #f9fafb;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+  flex-shrink: 0;
 }
 
 /* Switch 核心样式 */
 .h-switch {
   position: relative;
   display: inline-block;
-  width: 36px;
-  height: 20px;
+  width: 28px;
+  height: 16px;
 }
 
 .h-switch input {
@@ -2707,35 +2778,36 @@ watch(selectedStatsYear, () => {
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: #e2e8f0;
+  background-color: #d1d5db;
   transition: .3s;
 }
 
 .slider:before {
   position: absolute;
   content: "";
-  height: 14px;
-  width: 14px;
-  left: 3px;
-  bottom: 3px;
+  height: 12px;
+  width: 12px;
+  left: 2px;
+  bottom: 2px;
   background-color: white;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.18);
   transition: .3s;
 }
 
 input:checked + .slider {
-  background-color: #10b981;
+  background-color: #60a5fa;
 }
 
 input:focus + .slider {
-  box-shadow: 0 0 1px #10b981;
+  box-shadow: 0 0 1px #60a5fa;
 }
 
 input:checked + .slider:before {
-  transform: translateX(16px);
+  transform: translateX(12px);
 }
 
 .slider.round {
-  border-radius: 20px;
+  border-radius: 999px;
 }
 
 .slider.round:before {
@@ -2819,14 +2891,16 @@ input:checked + .slider:before {
   }
 
   .toolbar-round-actions {
-    justify-content: space-between;
-    gap: 6px;
+    justify-content: center;
+    width: 100%;
+    height: 54px;
+    padding: 4px;
+    justify-self: center;
   }
 
-  .round-action {
-    width: 22px;
-    height: 22px;
-    font-size: 0.5rem;
+  .view-toggle-btn {
+    flex: 1;
+    height: 44px;
   }
 
   .toolbar-summary {
@@ -2938,22 +3012,33 @@ input:checked + .slider:before {
   }
 
   .mobile-only {
-    display: block;
+    display: flex;
+  }
+
+  .list-wrapper {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
+    box-shadow: none;
+  }
+
+  .book-cards {
+    flex-direction: column;
+    gap: 14px;
   }
 
   .book-card {
     padding: 16px;
-    border-bottom: 1px solid #f1f5f9;
+    border-radius: 16px;
+    border: 1px solid #e5e7eb;
     background: #fff;
+    box-shadow: 0 10px 26px rgba(15, 23, 42, 0.08);
     transition: all 0.2s;
   }
 
   .card-hidden {
     opacity: 0.8;
-  }
-
-  .book-card:last-child {
-    border-bottom: none;
   }
 
   .card-main {
@@ -3005,7 +3090,7 @@ input:checked + .slider:before {
   }
 
   .card-del-btn {
-    padding: 4px 12px;
+    padding: 4px 10px;
     border-radius: 6px;
     background: #fff;
     border: 1px solid #fee2e2;
@@ -3016,21 +3101,46 @@ input:checked + .slider:before {
   }
 
   .card-footer {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+    border-top: 1px solid #e5e7eb;
+    padding-top: 18px;
   }
 
   .card-progress {
     display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .progress-header {
+    display: flex;
     align-items: center;
-    gap: 8px;
-    flex: 1;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .progress-label {
+    color: #64748b;
+    font-size: 0.92rem;
+    font-weight: 700;
+  }
+
+  .card-progress .progress-text {
+    color: #3b82f6;
+    font-size: 1rem;
+    font-weight: 800;
+    line-height: 1;
   }
 
   .card-progress .progress-bar-bg {
-    flex: 1;
-    max-width: 120px;
+    width: 100%;
+    max-width: none;
+    height: 7px;
+    background: #eef2f7;
+    border-radius: 999px;
+  }
+
+  .card-progress .progress-bar-fill {
+    border-radius: 999px;
   }
 }
 
