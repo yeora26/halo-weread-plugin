@@ -23,7 +23,7 @@
 ## 安装指南
 
 ### 环境要求
-*   Halo 版本: >= 2.23.0
+*   Halo 版本: >= 2.26.0
 
 ### 手动安装
 1. 下载插件的 JAR 包（例如 `halo-weread-plugin-x.y.z.jar`）。
@@ -56,107 +56,22 @@
 <!-- 微信读书书架容器 -->
 <div id="weread-shelf-wrapper">加载中...</div>
 
-<script>
-  fetch('/apis/run.halo.plugin.wereadplugin/v1beta1/wereadbooks?size=1000')
-    .then(res => res.json())
-    .then(data => {
-      const books = data.items || [];
-      if (books.length === 0) {
-        document.getElementById('weread-shelf-wrapper').innerHTML = '暂无书籍';
-        return;
-      }
+<script type="module">
+  const container = document.getElementById('weread-shelf-wrapper');
 
-      // 排序：按阅读时间倒序
-      books.sort((a, b) => (b.spec.lastReadTime || 0) - (a.spec.lastReadTime || 0));
+  try {
+    const response = await fetch('/halo-weread-plugin/shelf-html');
+    if (!response.ok) throw new Error('书架请求失败');
 
-      // 分组：按年份
-      const yearGroups = {};
-      books.forEach(book => {
-        const time = book.spec.lastReadTime;
-        const year = time ? new Date(time).getFullYear() : "其他";
-        if (!yearGroups[year]) yearGroups[year] = [];
-        yearGroups[year].push(book);
-      });
-
-      const formatDate = (ts) => {
-        if (!ts) return "未知";
-        const d = new Date(ts);
-        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      };
-
-      // 注入样式
-      let html = `
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600&display=swap');
-        .wr-container { font-family: 'Outfit', system-ui, sans-serif; --wr-accent: #3b82f6; color: #111827; }
-        .wr-year-group { margin-bottom: 40px; }
-        .wr-year-title { font-size: 1.5rem; font-weight: 600; margin-bottom: 20px; border-left: 4px solid var(--wr-accent); padding-left: 15px; }
-        .wr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
-        .wr-card { display: flex; background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; transition: all 0.3s; cursor: pointer; }
-        .wr-card:hover { border-color: var(--wr-accent); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05); transform: translateY(-2px); }
-        .wr-card-cover { width: 85px; height: 120px; object-fit: cover; border-radius: 6px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); flex-shrink: 0; }
-        .wr-card-content { margin-left: 15px; flex-grow: 1; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; }
-        .wr-card-title { font-weight: 600; font-size: 1.05rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--wr-accent); }
-        .wr-card-author { font-size: 0.85rem; color: #6b7280; margin: 4px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .wr-tag-row { display: flex; gap: 8px; margin-top: 5px; }
-        .wr-tag { background: #f3f4f6; color: #4b5563; font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; font-weight: 500; }
-        .wr-stats-row { font-size: 0.8rem; color: #4b5563; margin-top: 10px; }
-        .wr-time-row { font-size: 0.8rem; color: #9ca3af; margin-top: 5px; }
-        .wr-modal { display:none; position:fixed; z-index:1000; left:0; top:0; width:100%; height:100%; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); align-items:center; justify-content:center; }
-        .wr-modal-content { background:white; width:90%; max-width:600px; max-height:80vh; border-radius:16px; position:relative; overflow-y:auto; padding:30px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); }
-        .wr-close { position:absolute; right:20px; top:15px; font-size:24px; cursor:pointer; color:#9ca3af; }
-        </style>
-        <div class="wr-container">
-      `;
-
-      // 渲染分组内容
-      Object.keys(yearGroups).sort((a,b)=>b-a).forEach(year => {
-        html += `
-          <div class="wr-year-group">
-            <h2 class="wr-year-title">${year} 年</h2>
-            <div class="wr-grid">
-              ${yearGroups[year].map(book => `
-                <div class="wr-card" onclick="window.showBookDetail('${book.metadata.name}')">
-                  <img class="wr-card-cover" src="${book.spec.cover}">
-                  <div class="wr-card-content">
-                    <div class="wr-card-title">${book.spec.title}</div>
-                    <div class="wr-card-author">${book.spec.author}</div>
-                    <div class="wr-tag-row">
-                      <span class="wr-tag">已同步</span><span class="wr-tag">图书</span>
-                      <span class="wr-tag">${book.spec.readInfo === 3 ? '已读完' : '在读'}</span>
-                    </div>
-                    <div class="wr-stats-row">划线 ${book.spec.noteCount || 0} · 想法 ${book.spec.reviewCount || 0}</div>
-                    <div class="wr-time-row">最近阅读 ${formatDate(book.spec.lastReadTime)}</div>
-                  </div>
-                </div>
-              `).join('')}
-            </div>
-          </div>
-        `;
-      });
-
-      html += `
-        </div>
-        <!-- 详情弹窗 -->
-        <div id="wrModal" class="wr-modal" onclick="if(event.target==this)this.style.display='none'">
-          <div class="wr-modal-content">
-            <span class="wr-close" onclick="document.getElementById('wrModal').style.display='none'">&times;</span>
-            <div id="wrModalBody">加载中...</div>
-          </div>
-        </div>
-      `;
-
-      document.getElementById('weread-shelf-wrapper').innerHTML = html;
-
-      // 弹窗控制函数
-      window.showBookDetail = function(id) {
-        document.getElementById('wrModal').style.display = 'flex';
-        document.getElementById('wrModalBody').innerHTML = '<div style="text-align:center;padding:50px;">已加载该书籍元数据，划线与评论同步功能持续开发中...</div>';
-      };
-    })
-    .catch(err => {
-      document.getElementById('weread-shelf-wrapper').innerHTML = '书架加载失败';
+    container.innerHTML = await response.text();
+    container.querySelectorAll('script').forEach((oldScript) => {
+      const script = document.createElement('script');
+      script.textContent = oldScript.textContent;
+      oldScript.replaceWith(script);
     });
+  } catch (error) {
+    container.textContent = '书架暂时无法展开，请稍后再试。';
+  }
 </script>
 ```
 

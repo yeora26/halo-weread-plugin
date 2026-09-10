@@ -11,7 +11,9 @@ metadata:
     rbac.authorization.halo.run/display-name: "公开书架资源访问"
 rules:
   - nonResourceURLs:
-      - /api/ext/halo-weread-plugin/**
+      - /halo-weread-plugin/books
+      - /halo-weread-plugin/books/*/notes
+      - /halo-weread-plugin/shelf-html
     verbs:
       - get
   - apiGroups:
